@@ -8,6 +8,11 @@ __pycache__/
 .envrc
 .python-version
 
+*.json
+*.csv
+*.xlsx
+*.pkl
+
 # Distribution / packaging
 .Python
 env/
