@@ -87,12 +87,26 @@ def create_complex_example_prompt(condensed_taxonomy: dict) -> str:
     """
     # Format all categories concisely
     categories_text = []
+    all_valid_elements = {}  # category -> [element names]
+
     for cat in condensed_taxonomy.get("categories", []):
         cat_name = cat["name"]
         cat_desc = cat["short_description"]
         categories_text.append(f"**{cat_name}**: {cat_desc}")
 
+        # Collect valid element names
+        all_valid_elements[cat_name] = [elem["name"] for elem in cat.get("elements", [])]
+
     categories_summary = "\n".join(categories_text)
+
+    # Format valid elements per category
+    elements_by_category = []
+    for cat_name, elem_names in all_valid_elements.items():
+        elements_by_category.append(
+            f"**{cat_name}**: {', '.join(f'\\"{e}\\"' for e in elem_names)}"
+        )
+
+    elements_reference = "\n".join(elements_by_category)
 
     return f"""You are an expert at creating training examples for conference feedback classification systems.
 
@@ -103,6 +117,16 @@ TASK: Generate complex and edge-case examples with BOTH Stage 1 (category detect
 AVAILABLE CATEGORIES:
 
 {categories_summary}
+
+---
+
+VALID ELEMENT NAMES BY CATEGORY (use EXACT names - do NOT paraphrase):
+
+{elements_reference}
+
+**CRITICAL**: When specifying elements in element_details, you MUST:
+1. Include the "category" field for each element_detail
+2. Use the EXACT element names listed above (not variations like "Event Schedule", "Panels/Discussions", etc.)
 
 ---
 
@@ -120,7 +144,7 @@ These should:
 For each example, provide:
 - categories_present: List of 2-3 top-level categories
 - stage1_reasoning: Why these categories apply
-- element_details: For each element mentioned, specify the category, element, excerpt, sentiment, and reasoning
+- element_details: For each element mentioned, specify the category, element (EXACT name), excerpt, sentiment, and reasoning
 
 Examples of good multi-category combinations:
 - Content + Speaker: "The keynote was brilliant and the speaker was engaging"
@@ -181,7 +205,9 @@ Negative example:
 
 ---
 
-Generate the examples and return as JSON with two arrays: multi_category_examples and negative_examples."""
+Generate the examples and return as JSON with two arrays: multi_category_examples and negative_examples.
+
+REMEMBER: Use ONLY the exact element names listed above and ALWAYS include the "category" field in element_details."""
 
 
 # =============================================================================

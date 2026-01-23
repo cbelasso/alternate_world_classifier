@@ -34,7 +34,9 @@ DEFAULT_OUTPUT = "./examples_simple_stage1.json"
 class ElementDetail(BaseModel):
     """Stage 2 element extraction details."""
 
-    element: str = Field(description="Specific element name within the category")
+    element: str = Field(
+        description="Specific element name within the category - MUST use exact name from taxonomy"
+    )
     excerpt: str = Field(description="Exact text excerpt from comment relating to this element")
     sentiment: str = Field(description="Sentiment: positive, negative, neutral, or mixed")
     reasoning: str = Field(
@@ -83,6 +85,9 @@ def create_category_example_prompt(category_data: dict) -> str:
     cat_name = category_data["name"]
     cat_desc = category_data["short_description"]
 
+    # Extract EXACT element names for validation
+    element_names = [elem["name"] for elem in category_data["elements"]]
+
     # Format elements
     elements_text = "\n".join(
         f"- {elem['name']}: {elem['short_description']}" for elem in category_data["elements"]
@@ -98,8 +103,14 @@ CATEGORY: {cat_name}
 
 DESCRIPTION: {cat_desc}
 
-ELEMENTS IN THIS CATEGORY:
+VALID ELEMENTS (use these EXACT names - do NOT paraphrase):
 {elements_text}
+
+**CRITICAL: When specifying elements in element_details, you MUST use these exact element names:**
+{", ".join(f'"{name}"' for name in element_names)}
+
+Do NOT create variations like "Event Schedule", "Panels/Discussions", "Venue/Facilities", etc.
+Use the EXACT names listed above.
 
 ---
 
@@ -116,10 +127,11 @@ GUIDELINES FOR CREATING DUAL-PURPOSE EXAMPLES:
 
 3. **Stage 2 labels** (Element extraction)
    - For each element mentioned in the comment, provide:
-     - element: The specific element name (e.g., "Community", "Networking")
+     - element: The EXACT element name from the list above (e.g., "Community", "Networking")  
      - excerpt: The EXACT text from the comment that relates to this element
      - sentiment: positive, negative, neutral, or mixed
      - reasoning: Why this excerpt maps to this element
+   - NOTE: For simple single-category examples, the category field is optional (will be inferred from context)
 
 4. **Vary the elements**
    - Example 1: Focus on one specific element
@@ -169,7 +181,9 @@ Another example with multiple elements:
 
 ---
 
-Generate 1-2 dual-purpose examples for the **{cat_name}** category. Return as JSON."""
+Generate 1-2 dual-purpose examples for the **{cat_name}** category. Return as JSON.
+
+REMEMBER: Use ONLY the exact element names listed above. Do not create variations or paraphrases."""
 
 
 # =============================================================================
