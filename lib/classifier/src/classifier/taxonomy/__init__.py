@@ -62,7 +62,14 @@ from .example_generator import (
 
 # Model building
 from .model_builder import build_models_from_taxonomy, load_taxonomy_models
-from .schemas import CategoryDetectionOutput, SentimentType
+from .schemas import (
+    CategoryDetectionOutput,
+    ClassificationSpan,
+    ElementExtractionOutput,
+    ElementExtractionSpan,
+    FinalClassificationOutput,
+    SentimentType,
+)
 
 # Utilities
 from .utils import (
@@ -80,6 +87,10 @@ __all__ = [
     # Static schemas
     "SentimentType",
     "CategoryDetectionOutput",
+    "ElementExtractionSpan",
+    "ElementExtractionOutput",
+    "ClassificationSpan",
+    "FinalClassificationOutput",
     # Model building
     "build_models_from_taxonomy",
     "load_taxonomy_models",
