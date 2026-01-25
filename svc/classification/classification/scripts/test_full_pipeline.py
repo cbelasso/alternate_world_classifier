@@ -144,7 +144,7 @@ TEST_COMMENTS = [
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Test Full Classification Pipeline (Stage 1 + Stage 2)"
+        description="Test Full Classification Pipeline (Stage 1 + Stage 2 + optional Stage 3)"
     )
 
     # Input sources
@@ -227,6 +227,13 @@ def main():
         help="Batch size for classification",
     )
     parser.add_argument(
+        "--stages",
+        type=int,
+        choices=[2, 3],
+        default=2,
+        help="Number of classification stages: 2 (element-level) or 3 (attribute-level with sentiment consensus)",
+    )
+    parser.add_argument(
         "--skip-classification",
         action="store_true",
         help="Skip classification (just build artifacts and prompts)",
@@ -291,6 +298,14 @@ def main():
         save_rules,
         validate_examples,
     )
+    from classifier.prompts.exporter import export_prompts_hierarchical_with_stage3
+    from classifier.prompts.stage3 import (
+        build_stage3_prompt_functions,
+        print_stage3_prompts_preview,
+    )
+
+    # Stage 3 imports (attribute level)
+    from classifier.taxonomy.condenser import enrich_with_attributes, get_attribute_stats
 
     print("✓ Imports successful")
 
@@ -438,11 +453,31 @@ def main():
     print_examples_preview(examples)
 
     # =========================================================================
-    # PHASE 2: Build Prompts
+    # PHASE 2: Enrich with Attributes (for Stage 3)
+    # =========================================================================
+
+    if taxonomy:
+        print("\n" + "=" * 70)
+        print("STEP 4: ENRICH WITH ATTRIBUTES")
+        print("=" * 70)
+
+        condensed = enrich_with_attributes(condensed, taxonomy, verbose=True)
+        attr_stats = get_attribute_stats(condensed)
+        print(
+            f"✓ Enriched: {attr_stats['total_attributes']} attributes across {attr_stats['elements_with_attributes']} elements"
+        )
+
+        if args.save_artifacts:
+            save_path = Path(args.save_artifacts) / "condensed_taxonomy.json"
+            save_condensed(condensed, save_path)
+            print("✓ Re-saved enriched condensed taxonomy")
+
+    # =========================================================================
+    # PHASE 3: Build Prompts
     # =========================================================================
 
     print("\n" + "=" * 70)
-    print("STEP 4: BUILD PROMPTS (Pure Python)")
+    print("STEP 5: BUILD PROMPTS (Pure Python)")
     print("=" * 70)
 
     # Stage 1
@@ -453,11 +488,27 @@ def main():
     stage2_prompts = build_stage2_prompt_functions(condensed, examples)
     print(f"✓ Stage 2 prompt functions built ({len(stage2_prompts)} categories)")
 
+    # Stage 3 (always build, even if not using for classification)
+    stage3_prompts = build_stage3_prompt_functions(condensed, examples)
+    total_stage3 = sum(len(v) for v in stage3_prompts.values())
+    print(f"✓ Stage 3 prompt functions built ({total_stage3} elements with attributes)")
+
     # Preview
     print_stage2_prompts_preview(condensed, examples)
+    print_stage3_prompts_preview(condensed, examples)
 
-    # Export prompts if requested (hierarchical structure)
-    if args.export_prompts:
+    # Export prompts if requested (hierarchical structure with Stage 3)
+    if args.export_prompts and taxonomy:
+        export_results = export_prompts_hierarchical_with_stage3(
+            condensed=condensed,
+            examples=examples,
+            rules=rules,
+            taxonomy=taxonomy,
+            output_dir=args.export_prompts,
+            verbose=True,
+        )
+        print(f"✓ Exported {export_results['total_files']} prompt files (including Stage 3)")
+    elif args.export_prompts:
         export_results = export_prompts_hierarchical(
             condensed=condensed,
             examples=examples,
@@ -468,11 +519,11 @@ def main():
         print(f"✓ Exported {export_results['total_files']} prompt files")
 
     # =========================================================================
-    # PHASE 3: Build Orchestrator
+    # PHASE 4: Build Orchestrator
     # =========================================================================
 
     print("\n" + "=" * 70)
-    print("STEP 5: BUILD ORCHESTRATOR")
+    print("STEP 6: BUILD ORCHESTRATOR")
     print("=" * 70)
 
     # Build dynamic schemas if we have taxonomy
@@ -485,12 +536,13 @@ def main():
     orchestrator = ClassificationOrchestrator(
         stage1_prompt=stage1_prompt,
         stage2_prompts=stage2_prompts,
+        stage3_prompts=stage3_prompts if args.stages == 3 else None,
         category_to_schema=category_to_schema,
     )
-    print("✓ Orchestrator ready")
+    print(f"✓ Orchestrator ready ({args.stages}-stage mode)")
 
     # =========================================================================
-    # PHASE 4: Run Classification
+    # PHASE 5: Run Classification
     # =========================================================================
 
     if args.skip_classification:
@@ -501,7 +553,7 @@ def main():
         return
 
     print("\n" + "=" * 70)
-    print("STEP 5: RUN CLASSIFICATION")
+    print(f"STEP 7: RUN CLASSIFICATION ({args.stages}-STAGE)")
     print("=" * 70)
 
     # Load comments
@@ -527,15 +579,23 @@ def main():
         max_model_len=8192 * 2,
         gpu_memory_utilization=0.9,
     ) as processor:
-        results = orchestrator.classify_comments(
-            comments,
-            processor,
-            batch_size=args.batch_size,
-            verbose=True,
-        )
+        if args.stages == 2:
+            results = orchestrator.classify_comments(
+                comments,
+                processor,
+                batch_size=args.batch_size,
+                verbose=True,
+            )
+        else:  # 3-stage
+            results = orchestrator.classify_comments_3stage(
+                comments,
+                processor,
+                batch_size=args.batch_size,
+                verbose=True,
+            )
 
     # =========================================================================
-    # PHASE 5: Display and Save Results
+    # PHASE 6: Display and Save Results
     # =========================================================================
 
     orchestrator.print_results_summary(results, max_display=15)
@@ -545,28 +605,61 @@ def main():
         print("SAVING RESULTS")
         print("=" * 70)
 
-        # Save as DataFrame/CSV
-        df = orchestrator.results_to_dataframe(results)
-        csv_path = Path(args.save_artifacts) / "classification_results.csv"
+        # Save as DataFrame/CSV (use appropriate method based on stages)
+        if args.stages == 2:
+            df = orchestrator.results_to_dataframe(results)
+        else:
+            df = orchestrator.results_to_dataframe_3stage(results)
+
+        csv_path = Path(args.save_artifacts) / f"classification_results_{args.stages}stage.csv"
         df.to_csv(csv_path, index=False)
         print(f"✓ Saved CSV: {csv_path}")
 
         # Save as JSON
         json_data = orchestrator.results_to_json(results)
-        json_path = Path(args.save_artifacts) / "classification_results.json"
+        json_path = (
+            Path(args.save_artifacts) / f"classification_results_{args.stages}stage.json"
+        )
         with open(json_path, "w") as f:
             json.dump(json_data, f, indent=2)
         print(f"✓ Saved JSON: {json_path}")
 
         # Save stats
         stats = orchestrator.get_classification_stats(results)
-        stats_path = Path(args.save_artifacts) / "classification_stats.json"
+        stats_path = Path(args.save_artifacts) / f"classification_stats_{args.stages}stage.json"
         with open(stats_path, "w") as f:
             json.dump(stats, f, indent=2)
         print(f"✓ Saved stats: {stats_path}")
 
+        # If 3-stage, also save consensus analysis
+        if args.stages == 3:
+            consensus_data = {
+                "total_classifications": len([c for r in results for c in r.classifications]),
+                "with_consensus": len(
+                    [c for r in results for c in r.classifications if c.sentiment_consensus]
+                ),
+                "mismatches": [
+                    {
+                        "comment": r.original_comment[:100],
+                        "excerpt": c.excerpt,
+                        "category": c.category,
+                        "element": c.element,
+                        "attribute": c.attribute,
+                        "element_sentiment": c.element_sentiment,
+                        "attribute_sentiment": c.attribute_sentiment,
+                    }
+                    for r in results
+                    for c in r.classifications
+                    if not c.sentiment_consensus
+                ],
+            }
+            consensus_path = Path(args.save_artifacts) / "sentiment_consensus.json"
+            with open(consensus_path, "w") as f:
+                json.dump(consensus_data, f, indent=2)
+            print(f"✓ Saved consensus analysis: {consensus_path}")
+
     print("\n" + "=" * 70)
-    print("🔥 FULL PIPELINE COMPLETE! 🔥")
+    print(f"🔥 FULL {args.stages}-STAGE PIPELINE COMPLETE! 🔥")
     print("=" * 70)
 
 

@@ -35,11 +35,14 @@ Usage:
 # Static schemas
 # Condenser
 from .condenser import (
+    CondensedAttribute,
     CondensedCategory,
     CondensedElement,
     CondensedTaxonomy,
     check_condensation_quality,
     condense_taxonomy,
+    enrich_with_attributes,
+    get_attribute_stats,
     load_condensed,
     print_condensed_preview,
     save_condensed,
@@ -67,22 +70,29 @@ from .model_builder import build_models_from_taxonomy, load_taxonomy_models
 from .rule_generator import (
     DEFAULT_STAGE1_BASE_RULES,
     DEFAULT_STAGE2_BASE_RULES,
+    DEFAULT_STAGE3_BASE_RULES,
     CategoryRules,
     ClassificationRules,
+    ElementRules,
     create_default_rules,
     generate_all_rules,
     generate_category_rules,
+    generate_element_rules,
     load_rules,
     merge_rules,
     print_rules_preview,
     save_rules,
 )
 from .schemas import (
+    AttributeExtractionOutput,
+    AttributeExtractionSpan,
     CategoryDetectionOutput,
     ClassificationSpan,
+    ClassificationSpanWithAttribute,
     ElementExtractionOutput,
     ElementExtractionSpan,
     FinalClassificationOutput,
+    FinalClassificationOutputWithAttributes,
     SentimentType,
 )
 
@@ -104,8 +114,12 @@ __all__ = [
     "CategoryDetectionOutput",
     "ElementExtractionSpan",
     "ElementExtractionOutput",
+    "AttributeExtractionSpan",
+    "AttributeExtractionOutput",
     "ClassificationSpan",
+    "ClassificationSpanWithAttribute",
     "FinalClassificationOutput",
+    "FinalClassificationOutputWithAttributes",
     # Model building
     "build_models_from_taxonomy",
     "load_taxonomy_models",
@@ -135,8 +149,10 @@ __all__ = [
     # Rule types
     "ClassificationRules",
     "CategoryRules",
+    "ElementRules",
     # Rule functions
     "generate_category_rules",
+    "generate_element_rules",
     "generate_all_rules",
     "create_default_rules",
     "save_rules",
@@ -145,6 +161,7 @@ __all__ = [
     "print_rules_preview",
     "DEFAULT_STAGE1_BASE_RULES",
     "DEFAULT_STAGE2_BASE_RULES",
+    "DEFAULT_STAGE3_BASE_RULES",
     # Utilities
     "sanitize_model_name",
     "print_taxonomy_hierarchy",

@@ -37,8 +37,10 @@ Usage:
 # Hierarchical exporter
 from .exporter import (
     export_prompts_hierarchical,
+    export_prompts_hierarchical_with_stage3,
     export_stage1_prompt,
     export_stage2_prompts,
+    export_stage3_prompts,
     is_manually_edited,
     sanitize_name,
 )
@@ -61,6 +63,17 @@ from .stage2 import (
     print_stage2_prompts_preview,
 )
 
+# Stage 3
+from .stage3 import (
+    DEFAULT_STAGE3_BASE_RULES,
+    build_stage3_prompt_function,
+    build_stage3_prompt_functions,
+    get_all_category_element_pairs,
+    get_stage3_examples_for_element,
+    get_stage3_prompt_stats,
+    print_stage3_prompts_preview,
+)
+
 __all__ = [
     # Stage 1
     "build_stage1_prompt_function",
@@ -78,10 +91,20 @@ __all__ = [
     "print_stage2_prompts_preview",
     "DEFAULT_STAGE2_RULES",
     "CATEGORY_SPECIFIC_RULES",
+    # Stage 3
+    "build_stage3_prompt_function",
+    "build_stage3_prompt_functions",
+    "get_stage3_examples_for_element",
+    "get_stage3_prompt_stats",
+    "print_stage3_prompts_preview",
+    "get_all_category_element_pairs",
+    "DEFAULT_STAGE3_BASE_RULES",
     # Hierarchical exporter
     "export_prompts_hierarchical",
+    "export_prompts_hierarchical_with_stage3",
     "export_stage1_prompt",
     "export_stage2_prompts",
+    "export_stage3_prompts",
     "is_manually_edited",
     "sanitize_name",
 ]

@@ -6,8 +6,11 @@ Contains Pydantic models that are constant across all taxonomies:
     - CategoryDetectionOutput: Stage 1 output schema
     - ElementExtractionSpan: Stage 2 span schema (generic)
     - ElementExtractionOutput: Stage 2 output schema (generic)
-    - ClassificationSpan: Final unified span model
-    - FinalClassificationOutput: Combined output after both stages
+    - AttributeExtractionSpan: Stage 3 span schema (generic)
+    - AttributeExtractionOutput: Stage 3 output schema (generic)
+    - ClassificationSpan: Final unified span model (2-stage)
+    - ClassificationSpanWithAttribute: Final unified span model (3-stage)
+    - FinalClassificationOutput: Combined output after all stages
 """
 
 from typing import List, Literal, Optional
@@ -61,7 +64,7 @@ class ElementExtractionSpan(BaseModel):
     Attributes:
         excerpt: The exact text excerpt from the comment
         element: The element name (should match taxonomy)
-        sentiment: The sentiment of this excerpt
+        sentiment: The sentiment of this excerpt (element-level)
         reasoning: Why this excerpt maps to this element
     """
 
@@ -86,13 +89,46 @@ class ElementExtractionOutput(BaseModel):
 
 
 # =============================================================================
-# Final Combined Output
+# Stage 3: Attribute Extraction
+# =============================================================================
+
+
+class AttributeExtractionSpan(BaseModel):
+    """
+    Stage 3 span: A single attribute extracted from the comment.
+
+    Attributes:
+        excerpt: The exact text excerpt from the comment
+        attribute: The attribute name (should match taxonomy)
+        sentiment: The sentiment of this excerpt (attribute-level)
+        reasoning: Why this excerpt maps to this attribute
+    """
+
+    excerpt: str
+    attribute: str
+    sentiment: SentimentType
+    reasoning: str
+
+
+class AttributeExtractionOutput(BaseModel):
+    """
+    Stage 3 output: List of attribute extractions for a single element.
+
+    Attributes:
+        classifications: List of extracted attribute spans
+    """
+
+    classifications: List[AttributeExtractionSpan]
+
+
+# =============================================================================
+# Final Combined Output (2-Stage)
 # =============================================================================
 
 
 class ClassificationSpan(BaseModel):
     """
-    Unified span model for final output.
+    Unified span model for 2-stage output.
 
     Combines category (from Stage 1) with element details (from Stage 2).
 
@@ -113,7 +149,7 @@ class ClassificationSpan(BaseModel):
 
 class FinalClassificationOutput(BaseModel):
     """
-    Combined output after both stages.
+    Combined output after 2 stages (category + element).
 
     This is the final result of classifying a single comment through
     Stage 1 (category detection) and Stage 2 (element extraction).
@@ -129,3 +165,70 @@ class FinalClassificationOutput(BaseModel):
     has_classifiable_content: bool
     category_reasoning: str
     classifications: List[ClassificationSpan]
+
+
+# =============================================================================
+# Final Combined Output (3-Stage)
+# =============================================================================
+
+
+class ClassificationSpanWithAttribute(BaseModel):
+    """
+    Unified span model for 3-stage output.
+
+    Combines category (Stage 1) + element (Stage 2) + attribute (Stage 3).
+    Includes sentiment at both element and attribute levels for consensus checking.
+
+    Attributes:
+        excerpt: The exact text excerpt from the comment
+        category: The top-level category name
+        element: The element name within the category
+        element_sentiment: Sentiment at the element level (from Stage 2)
+        attribute: The attribute name within the element
+        attribute_sentiment: Sentiment at the attribute level (from Stage 3)
+        reasoning: Why this excerpt maps to this attribute
+        sentiment_consensus: Whether element and attribute sentiments match
+    """
+
+    excerpt: str
+    category: str
+    element: str
+    element_sentiment: SentimentType
+    attribute: str
+    attribute_sentiment: SentimentType
+    reasoning: str
+
+    @property
+    def sentiment_consensus(self) -> bool:
+        """Check if element and attribute sentiments match."""
+        return self.element_sentiment == self.attribute_sentiment
+
+
+class FinalClassificationOutputWithAttributes(BaseModel):
+    """
+    Combined output after 3 stages (category + element + attribute).
+
+    Includes sentiment at both element and attribute levels for validation.
+
+    Attributes:
+        original_comment: The original comment text
+        has_classifiable_content: Whether the comment contains classifiable feedback
+        category_reasoning: Stage 1 reasoning for category detection
+        classifications: List of all extracted classifications with attributes
+    """
+
+    original_comment: str
+    has_classifiable_content: bool
+    category_reasoning: str
+    classifications: List[ClassificationSpanWithAttribute]
+
+    def get_consensus_rate(self) -> float:
+        """Calculate the rate of sentiment consensus across classifications."""
+        if not self.classifications:
+            return 1.0
+        matches = sum(1 for c in self.classifications if c.sentiment_consensus)
+        return matches / len(self.classifications)
+
+    def get_mismatches(self) -> List[ClassificationSpanWithAttribute]:
+        """Get classifications where element and attribute sentiments differ."""
+        return [c for c in self.classifications if not c.sentiment_consensus]

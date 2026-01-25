@@ -614,3 +614,426 @@ def export_prompts_hierarchical(
         "stage2_files": stage2_files,
         "total_files": 1 + len(stage2_files),
     }
+
+
+# =============================================================================
+# Stage 3 Export
+# =============================================================================
+
+
+def export_stage3_prompts(
+    condensed: CondensedTaxonomy,
+    examples: ExampleSet | List[ClassificationExample],
+    rules: ClassificationRules,
+    taxonomy: dict,
+    output_dir: str | Path,
+    force_overwrite: bool = False,
+) -> List[Path]:
+    """
+    Export Stage 3 attribute extraction prompts (nested: category/element.py).
+
+    Creates:
+        stage3/
+        ├── __init__.py
+        ├── attendee_engagement_and_interaction/
+        │   ├── __init__.py
+        │   ├── community.py
+        │   └── knowledge_exchange.py
+        └── people/
+            ├── __init__.py
+            ├── speakers_presenters.py
+            └── ...
+
+    Args:
+        condensed: CondensedTaxonomy
+        examples: ExampleSet or list
+        rules: ClassificationRules
+        taxonomy: Raw taxonomy dict (for attribute info)
+        output_dir: Output directory (will create stage3/ subfolder)
+        force_overwrite: If True, overwrite even if MANUALLY_EDITED
+
+    Returns:
+        List of paths to exported files
+    """
+    from .stage3 import (
+        format_attributes_section,
+        format_stage3_examples_section,
+        format_stage3_rules,
+        get_attributes_for_element,
+        get_stage3_examples_for_element,
+    )
+
+    output_dir = Path(output_dir)
+    stage3_dir = output_dir / "stage3"
+    stage3_dir.mkdir(parents=True, exist_ok=True)
+
+    exported_files = []
+
+    for category in condensed.categories:
+        # Create category subfolder
+        cat_sanitized = sanitize_name(category.name)
+        cat_dir = stage3_dir / cat_sanitized
+        cat_dir.mkdir(parents=True, exist_ok=True)
+
+        element_funcs = []  # Track for __init__.py
+
+        for element in category.elements:
+            # Get attributes to check if element has any
+            attributes = get_attributes_for_element(taxonomy, category.name, element.name)
+            if not attributes:
+                continue  # Skip elements without attributes
+
+            # Sanitize filename
+            elem_sanitized = sanitize_name(element.name)
+            filename = f"{elem_sanitized}.py"
+            filepath = cat_dir / filename
+
+            # Check for manual edits
+            if not force_overwrite and is_manually_edited(filepath):
+                print(f"  ⏭ Skipping {filepath} (MANUALLY_EDITED: True)")
+                exported_files.append(filepath)
+                element_funcs.append((element.name, elem_sanitized))
+                continue
+
+            # Build prompt components
+            attributes_section = format_attributes_section(element, taxonomy, category.name)
+
+            element_examples = get_stage3_examples_for_element(
+                examples, category.name, element.name
+            )
+            examples_section = format_stage3_examples_section(
+                element_examples, category.name, element.name, taxonomy
+            )
+
+            # Build rules section
+            all_rules = rules.get_all_stage3_rules(category.name, element.name)
+            rules_section = "\n".join(f"{i}. {r}" for i, r in enumerate(all_rules, 1))
+
+            # Generate header
+            header = generate_header(
+                title=f"Stage 3: {category.name} > {element.name}",
+                description=f"Extracts attribute-level feedback for {element.name}.",
+                source_files=["condensed_taxonomy.json", "examples.json", "rules.json"],
+                additional_notes=[
+                    f"Category: {category.name}",
+                    f"Element: {element.name}",
+                    f"Attributes: {', '.join(a['name'] for a in attributes)}",
+                ],
+            )
+
+            # Build function name
+            func_name = f"stage3_{cat_sanitized}_{elem_sanitized}_prompt"
+
+            # Build module content
+            module_content = f'''{header}
+
+CATEGORY_NAME = "{category.name}"
+ELEMENT_NAME = "{element.name}"
+
+ATTRIBUTES = [
+    {", ".join(f'"{a["name"]}"' for a in attributes)}
+]
+
+
+def {func_name}(comment: str) -> str:
+    """
+    Generate Stage 3 attribute extraction prompt for {category.name} > {element.name}.
+
+    Args:
+        comment: The conference feedback comment to analyze
+
+    Returns:
+        Formatted prompt string ready for LLM processing
+    """
+    return f"""You are an expert conference feedback analyzer. Extract specific feedback related to attributes of {element.name} (within {category.name}) from this comment.
+
+COMMENT TO ANALYZE:
+{{comment}}
+
+---
+
+CONTEXT:
+This comment has been identified as discussing "{element.name}" within the "{category.name}" category.
+Your task is to identify which specific ATTRIBUTES of {element.name} are being discussed.
+
+---
+
+ATTRIBUTES TO IDENTIFY:
+
+{attributes_section}
+
+---
+
+CLASSIFICATION RULES:
+
+{rules_section}
+
+---
+
+EXAMPLES:
+
+{examples_section}
+
+---
+
+Extract all relevant excerpts and return ONLY valid JSON. If no content relates to specific attributes of {element.name}, return {{"classifications": []}}."""
+
+
+# Convenience alias
+PROMPT = {func_name}
+'''
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(module_content)
+
+            exported_files.append(filepath)
+            element_funcs.append((element.name, elem_sanitized))
+
+        # Generate category __init__.py
+        if element_funcs:
+            _generate_stage3_category_init(cat_dir, category.name, cat_sanitized, element_funcs)
+
+    # Generate stage3 __init__.py
+    _generate_stage3_init(stage3_dir, condensed)
+
+    return exported_files
+
+
+def _generate_stage3_category_init(
+    cat_dir: Path,
+    category_name: str,
+    cat_sanitized: str,
+    element_funcs: List[tuple],
+) -> None:
+    """Generate __init__.py for a Stage 3 category folder."""
+    imports = []
+    exports = []
+    dict_entries = []
+
+    for elem_name, elem_sanitized in element_funcs:
+        func_name = f"stage3_{cat_sanitized}_{elem_sanitized}_prompt"
+        imports.append(f"from .{elem_sanitized} import {func_name}")
+        exports.append(func_name)
+        dict_entries.append(f'    "{elem_name}": {func_name},')
+
+    imports_str = "\n".join(imports)
+    exports_str = ",\n    ".join(f'"{e}"' for e in exports)
+    dict_str = "\n".join(dict_entries)
+
+    content = f'''"""
+Stage 3: {category_name}
+
+Attribute extraction prompts for elements in {category_name}.
+
+Usage:
+    from stage3.{cat_sanitized} import STAGE3_PROMPTS
+    prompt = STAGE3_PROMPTS["Community"]("Your comment here")
+"""
+
+from typing import Callable, Dict
+
+{imports_str}
+
+STAGE3_PROMPTS: Dict[str, Callable[[str], str]] = {{
+{dict_str}
+}}
+
+CATEGORY_NAME = "{category_name}"
+
+__all__ = [
+    "STAGE3_PROMPTS",
+    "CATEGORY_NAME",
+    {exports_str}
+]
+'''
+
+    with open(cat_dir / "__init__.py", "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def _generate_stage3_init(stage3_dir: Path, condensed: CondensedTaxonomy) -> None:
+    """Generate main __init__.py for stage3 folder."""
+    imports = []
+    dict_entries = []
+
+    for category in condensed.categories:
+        cat_sanitized = sanitize_name(category.name)
+        imports.append(f"from . import {cat_sanitized}")
+        dict_entries.append(f'    "{category.name}": {cat_sanitized}.STAGE3_PROMPTS,')
+
+    imports_str = "\n".join(imports)
+    dict_str = "\n".join(dict_entries)
+
+    content = f'''"""
+Stage 3: Attribute Extraction Prompts
+
+Nested structure: category -> element -> prompt function
+
+Usage:
+    from prompts.stage3 import STAGE3_PROMPTS
+
+    # Access by category then element
+    prompt_fn = STAGE3_PROMPTS["Attendee Engagement & Interaction"]["Community"]
+    prompt = prompt_fn("Your comment here")
+"""
+
+from typing import Callable, Dict
+
+{imports_str}
+
+# Nested dict: category -> element -> prompt_fn
+STAGE3_PROMPTS: Dict[str, Dict[str, Callable[[str], str]]] = {{
+{dict_str}
+}}
+
+__all__ = [
+    "STAGE3_PROMPTS",
+]
+'''
+
+    with open(stage3_dir / "__init__.py", "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def export_prompts_hierarchical_with_stage3(
+    condensed: CondensedTaxonomy,
+    examples: ExampleSet | List[ClassificationExample],
+    rules: ClassificationRules,
+    taxonomy: dict,
+    output_dir: str | Path,
+    force_overwrite: bool = False,
+    verbose: bool = True,
+) -> dict:
+    """
+    Export all prompts including Stage 3 to a hierarchical folder structure.
+
+    Creates:
+        prompts/
+        ├── __init__.py
+        ├── stage1/
+        │   └── category_detection.py
+        ├── stage2/
+        │   ├── people.py
+        │   └── ...
+        └── stage3/
+            ├── attendee_engagement_and_interaction/
+            │   ├── community.py
+            │   └── ...
+            └── people/
+                └── ...
+
+    Args:
+        condensed: CondensedTaxonomy
+        examples: ExampleSet or list
+        rules: ClassificationRules
+        taxonomy: Raw taxonomy dict (for attribute info)
+        output_dir: Root output directory
+        force_overwrite: If True, overwrite files even if MANUALLY_EDITED
+        verbose: Print progress
+
+    Returns:
+        Dict with export results
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if verbose:
+        print("\n" + "=" * 70)
+        print("EXPORTING PROMPTS (Hierarchical with Stage 3)")
+        print("=" * 70)
+        print(f"Output: {output_dir}")
+
+    # Export Stage 1
+    if verbose:
+        print("\nStage 1:")
+    stage1_file = export_stage1_prompt(condensed, examples, rules, output_dir, force_overwrite)
+    if verbose:
+        print(f"  ✓ {stage1_file}")
+
+    # Export Stage 2
+    if verbose:
+        print(f"\nStage 2 ({len(condensed.categories)} categories):")
+    stage2_files = export_stage2_prompts(
+        condensed, examples, rules, output_dir, force_overwrite
+    )
+    for f in stage2_files:
+        if verbose:
+            print(f"  ✓ {f}")
+
+    # Export Stage 3
+    total_elements = sum(len(c.elements) for c in condensed.categories)
+    if verbose:
+        print(
+            f"\nStage 3 ({total_elements} elements across {len(condensed.categories)} categories):"
+        )
+    stage3_files = export_stage3_prompts(
+        condensed, examples, rules, taxonomy, output_dir, force_overwrite
+    )
+    for f in stage3_files:
+        if verbose:
+            print(f"  ✓ {f}")
+
+    # Generate __init__.py files
+    if verbose:
+        print("\nGenerating __init__.py files...")
+
+    _generate_stage1_init(output_dir / "stage1")
+    _generate_stage2_init(output_dir / "stage2", [c.name for c in condensed.categories])
+    _generate_main_init_with_stage3(output_dir)
+
+    total_files = 1 + len(stage2_files) + len(stage3_files)
+    if verbose:
+        print(f"\n✓ Exported {total_files} prompt files to {output_dir}")
+
+    return {
+        "stage1_file": stage1_file,
+        "stage2_files": stage2_files,
+        "stage3_files": stage3_files,
+        "total_files": total_files,
+    }
+
+
+def _generate_main_init_with_stage3(output_dir: Path) -> None:
+    """Generate main __init__.py for prompts folder including Stage 3."""
+    content = '''"""
+Classification Prompts
+
+Auto-generated prompt modules for the classification pipeline.
+
+Structure:
+    prompts/
+    ├── stage1/           # Category detection
+    │   └── category_detection.py
+    ├── stage2/           # Element extraction (one file per category)
+    │   ├── people.py
+    │   └── ...
+    └── stage3/           # Attribute extraction (nested: category/element.py)
+        ├── people/
+        │   └── speakers_presenters.py
+        └── ...
+
+Usage:
+    # Stage 1
+    from prompts.stage1 import stage1_category_detection_prompt
+
+    # Stage 2
+    from prompts.stage2 import STAGE2_PROMPTS
+
+    # Stage 3
+    from prompts.stage3 import STAGE3_PROMPTS
+"""
+
+from .stage1 import stage1_category_detection_prompt, STAGE1_PROMPT
+from .stage2 import STAGE2_PROMPTS
+from .stage3 import STAGE3_PROMPTS
+
+__all__ = [
+    "stage1_category_detection_prompt",
+    "STAGE1_PROMPT",
+    "STAGE2_PROMPTS",
+    "STAGE3_PROMPTS",
+]
+'''
+
+    with open(output_dir / "__init__.py", "w", encoding="utf-8") as f:
+        f.write(content)

@@ -31,12 +31,24 @@ from pydantic import BaseModel, Field
 # =============================================================================
 
 
+class CondensedAttribute(BaseModel):
+    """Concise attribute description for use in classification prompts."""
+
+    name: str = Field(description="Attribute name (unchanged from taxonomy)")
+    short_description: str = Field(
+        description="Concise description focusing on key distinguishing features"
+    )
+
+
 class CondensedElement(BaseModel):
     """Concise element description for use in classification prompts."""
 
     name: str = Field(description="Element name (unchanged from taxonomy)")
     short_description: str = Field(
         description="Concise description focusing on key distinguishing features and examples"
+    )
+    attributes: Optional[List[CondensedAttribute]] = Field(
+        default=None, description="Optional list of attributes for this element (for Stage 3)"
     )
 
 
@@ -454,7 +466,14 @@ def print_condensed_preview(condensed: CondensedTaxonomy) -> None:
         print(f"\n**{cat.name}**")
         print(f"{cat.short_description}")
         for elem in cat.elements:
-            print(f"  - {elem.name}: {elem.short_description}")
+            if elem.attributes:
+                print(f"  - {elem.name}: {elem.short_description}")
+                for attr in elem.attributes[:3]:  # Show first 3
+                    print(f"      • {attr.name}")
+                if len(elem.attributes) > 3:
+                    print(f"      ... and {len(elem.attributes) - 3} more attributes")
+            else:
+                print(f"  - {elem.name}: {elem.short_description}")
 
     # Quality check
     quality = check_condensation_quality(condensed)
@@ -463,9 +482,160 @@ def print_condensed_preview(condensed: CondensedTaxonomy) -> None:
     print(f"  Total elements: {quality['total_elements']}")
     print(f"  Vague elements: {quality['vague_elements']} ({quality['vague_percentage']:.1f}%)")
 
+    # Attribute stats
+    attr_stats = get_attribute_stats(condensed)
+    if attr_stats["total_attributes"] > 0:
+        print(f"  Elements with attributes: {attr_stats['elements_with_attributes']}")
+        print(f"  Total attributes: {attr_stats['total_attributes']}")
+
     if quality["warnings"]:
         print("\n  Warnings:")
         for w in quality["warnings"][:5]:  # Show first 5
             print(f"    ⚠ {w}")
         if len(quality["warnings"]) > 5:
             print(f"    ... and {len(quality['warnings']) - 5} more")
+
+
+# =============================================================================
+# Attribute Enrichment (for Stage 3)
+# =============================================================================
+
+
+def enrich_with_attributes(
+    condensed: CondensedTaxonomy,
+    taxonomy: dict,
+    max_description_length: int = 150,
+    verbose: bool = True,
+) -> CondensedTaxonomy:
+    """
+    Enrich a condensed taxonomy with attribute information from the raw taxonomy.
+
+    This function extracts attribute definitions from the raw taxonomy and adds
+    them to the corresponding elements in the condensed taxonomy. Attributes are
+    used for Stage 3 classification.
+
+    Args:
+        condensed: CondensedTaxonomy to enrich
+        taxonomy: Raw taxonomy dict with attribute children
+        max_description_length: Maximum length for attribute descriptions
+        verbose: Print progress
+
+    Returns:
+        New CondensedTaxonomy with attributes added to elements
+
+    Example:
+        >>> condensed = load_condensed("condensed.json")
+        >>> with open("taxonomy.json") as f:
+        ...     taxonomy = json.load(f)
+        >>> enriched = enrich_with_attributes(condensed, taxonomy)
+        >>> save_condensed(enriched, "condensed_with_attrs.json")
+    """
+    if verbose:
+        print("\nEnriching condensed taxonomy with attributes...")
+
+    total_attributes = 0
+    enriched_categories = []
+
+    for cat in condensed.categories:
+        # Find matching category in taxonomy
+        raw_cat = None
+        for c in taxonomy.get("children", []):
+            if c.get("name") == cat.name:
+                raw_cat = c
+                break
+
+        if not raw_cat:
+            # No match, keep as-is
+            enriched_categories.append(cat)
+            continue
+
+        enriched_elements = []
+
+        for elem in cat.elements:
+            # Find matching element in taxonomy
+            raw_elem = None
+            for e in raw_cat.get("children", []):
+                if e.get("name") == elem.name:
+                    raw_elem = e
+                    break
+
+            if not raw_elem or not raw_elem.get("children"):
+                # No attributes, keep as-is
+                enriched_elements.append(elem)
+                continue
+
+            # Extract attributes
+            attributes = []
+            for attr in raw_elem.get("children", []):
+                attr_name = attr.get("name", "")
+                # Use description or definition, truncated if needed
+                description = attr.get("description", attr.get("definition", ""))
+                if len(description) > max_description_length:
+                    description = description[: max_description_length - 3] + "..."
+
+                attributes.append(
+                    CondensedAttribute(
+                        name=attr_name,
+                        short_description=description,
+                    )
+                )
+                total_attributes += 1
+
+            # Create enriched element
+            enriched_elements.append(
+                CondensedElement(
+                    name=elem.name,
+                    short_description=elem.short_description,
+                    attributes=attributes if attributes else None,
+                )
+            )
+
+            if verbose and attributes:
+                print(f"  • {cat.name} > {elem.name}: {len(attributes)} attributes")
+
+        enriched_categories.append(
+            CondensedCategory(
+                name=cat.name,
+                short_description=cat.short_description,
+                elements=enriched_elements,
+            )
+        )
+
+    if verbose:
+        print(f"✓ Added {total_attributes} attributes")
+
+    return CondensedTaxonomy(
+        categories=enriched_categories,
+        metadata=condensed.metadata,
+    )
+
+
+def get_attribute_stats(condensed: CondensedTaxonomy) -> dict:
+    """
+    Get statistics about attributes in a condensed taxonomy.
+
+    Args:
+        condensed: CondensedTaxonomy
+
+    Returns:
+        Dict with attribute statistics
+    """
+    total_elements = 0
+    elements_with_attrs = 0
+    total_attrs = 0
+
+    for cat in condensed.categories:
+        for elem in cat.elements:
+            total_elements += 1
+            if elem.attributes:
+                elements_with_attrs += 1
+                total_attrs += len(elem.attributes)
+
+    return {
+        "total_elements": total_elements,
+        "elements_with_attributes": elements_with_attrs,
+        "total_attributes": total_attrs,
+        "avg_attributes_per_element": (
+            total_attrs / elements_with_attrs if elements_with_attrs > 0 else 0
+        ),
+    }

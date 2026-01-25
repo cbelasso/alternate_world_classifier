@@ -47,6 +47,16 @@ class CategoryRules(BaseModel):
     )
 
 
+class ElementRules(BaseModel):
+    """Rules specific to a single element (for Stage 3)."""
+
+    category: str = Field(description="Parent category name")
+    element: str = Field(description="Element name")
+    rules: List[str] = Field(
+        description="List of disambiguation rules for attributes of this element"
+    )
+
+
 class ClassificationRules(BaseModel):
     """Complete set of classification rules."""
 
@@ -61,6 +71,14 @@ class ClassificationRules(BaseModel):
     )
     stage2_category_rules: List[CategoryRules] = Field(
         description="Category-specific rules for Stage 2"
+    )
+
+    # Stage 3 rules
+    stage3_base_rules: List[str] = Field(
+        default_factory=list, description="Base rules for Stage 3 attribute extraction"
+    )
+    stage3_element_rules: List[ElementRules] = Field(
+        default_factory=list, description="Element-specific rules for Stage 3"
     )
 
     # Metadata
@@ -88,6 +106,21 @@ class ClassificationRules(BaseModel):
         """Get combined base + category rules for Stage 2."""
         return self.stage2_base_rules + self.get_stage2_category_rules(category)
 
+    def get_stage3_base_rules(self) -> List[str]:
+        """Get Stage 3 base rules."""
+        return self.stage3_base_rules
+
+    def get_stage3_element_rules(self, category: str, element: str) -> List[str]:
+        """Get element-specific rules for Stage 3."""
+        for elem_rules in self.stage3_element_rules:
+            if elem_rules.category == category and elem_rules.element == element:
+                return elem_rules.rules
+        return []
+
+    def get_all_stage3_rules(self, category: str, element: str) -> List[str]:
+        """Get combined base + element rules for Stage 3."""
+        return self.stage3_base_rules + self.get_stage3_element_rules(category, element)
+
 
 # =============================================================================
 # Default Base Rules
@@ -108,6 +141,15 @@ DEFAULT_STAGE2_BASE_RULES = [
     "Only extract elements that are clearly present - do not infer or assume.",
 ]
 
+DEFAULT_STAGE3_BASE_RULES = [
+    "Extract the EXACT excerpt from the comment that relates to each attribute.",
+    "Each excerpt should be classified to ONE attribute only.",
+    "Sentiment: positive (praise), negative (criticism), neutral (observation), mixed (both positive and negative).",
+    "If multiple distinct excerpts relate to the same attribute, create separate entries.",
+    "Only extract attributes that are clearly present - do not infer or assume.",
+    "Focus on the SPECIFIC ASPECT (attribute) being discussed, not the general element.",
+]
+
 
 # =============================================================================
 # LLM Response Schema
@@ -120,6 +162,16 @@ class _CategoryRulesResponse(BaseModel):
     category: str
     disambiguation_rules: List[str] = Field(
         description="Rules to help distinguish between similar elements"
+    )
+    common_mistakes: List[str] = Field(description="Common classification mistakes to avoid")
+
+
+class _ElementRulesResponse(BaseModel):
+    """LLM response for generating element-specific rules (for Stage 3)."""
+
+    element: str
+    disambiguation_rules: List[str] = Field(
+        description="Rules to help distinguish between similar attributes"
     )
     common_mistakes: List[str] = Field(description="Common classification mistakes to avoid")
 
@@ -288,22 +340,207 @@ def generate_category_rules(
     return category_rules
 
 
+def _build_element_rules_prompt(
+    category_name: str,
+    element_name: str,
+    attributes: List[dict],
+) -> str:
+    """
+    Build prompt to generate disambiguation rules for attributes of an element.
+
+    Args:
+        category_name: Name of the parent category
+        element_name: Name of the element
+        attributes: List of attribute dicts with 'name' and 'description'
+    """
+    attributes_text = "\n".join(
+        f"- **{a['name']}**: {a.get('description', a.get('definition', ''))[:150]}"
+        for a in attributes
+    )
+
+    attribute_names = [a["name"] for a in attributes]
+
+    return f"""You are an expert at creating classification guidelines. Your task is to generate disambiguation rules for classifying conference feedback into the correct ATTRIBUTE within an element.
+
+CONTEXT:
+- Category: {category_name}
+- Element: {element_name}
+
+ATTRIBUTES OF THIS ELEMENT:
+{attributes_text}
+
+---
+
+YOUR TASK:
+
+Generate rules that help classifiers distinguish between these attributes. Focus on:
+
+1. **Disambiguation rules**: How to tell similar attributes apart
+   - What makes Attribute A different from Attribute B?
+   - What keywords or phrases indicate each attribute?
+
+2. **Common mistakes to avoid**: Pitfalls classifiers might fall into
+
+---
+
+EXAMPLES OF GOOD ATTRIBUTE DISAMBIGUATION RULES:
+
+For "Community" element with attributes [Comfort Level, Engagement, Support, Value]:
+- "Comfort Level" = feeling welcome, at ease, safe; "Engagement" = active participation, involvement
+- "Support" = help, mentoring, assistance received; "Value" = benefit, importance, worth perceived
+- Phrases like "felt welcome" or "inclusive" → Comfort Level
+- Phrases like "actively participated" or "got involved" → Engagement
+
+---
+
+Generate disambiguation rules for the **{element_name}** element with attributes: {", ".join(attribute_names)}.
+
+Return as JSON."""
+
+
+def generate_element_rules(
+    condensed: CondensedTaxonomy,
+    taxonomy: dict,
+    processor: ProcessorProtocol,
+    guided_config: Optional[dict] = None,
+    verbose: bool = True,
+) -> List[ElementRules]:
+    """
+    Generate element-specific disambiguation rules for Stage 3.
+
+    Args:
+        condensed: CondensedTaxonomy
+        taxonomy: Raw taxonomy dict (for attribute information)
+        processor: LLM processor
+        guided_config: Optional sampling parameters
+        verbose: Print progress
+
+    Returns:
+        List of ElementRules (one per element that has attributes)
+    """
+    config = guided_config or {
+        "temperature": 0.7,
+        "max_tokens": 1500,
+    }
+
+    if verbose:
+        print("Generating Stage 3 element rules...")
+
+    # Build prompts for all elements that have attributes
+    prompts = []
+    element_info = []  # (category_name, element_name) pairs
+
+    for category in condensed.categories:
+        for element in category.elements:
+            # Get attributes from taxonomy
+            attributes = _get_attributes_for_element(taxonomy, category.name, element.name)
+
+            if not attributes:
+                continue  # Skip elements without attributes
+
+            prompt = _build_element_rules_prompt(category.name, element.name, attributes)
+            prompts.append(prompt)
+            element_info.append((category.name, element.name))
+
+            if verbose:
+                print(f"  • {category.name} > {element.name} ({len(attributes)} attributes)")
+
+    if not prompts:
+        if verbose:
+            print("  No elements with attributes found")
+        return []
+
+    # Process all elements
+    if verbose:
+        print(f"\nRunning LLM generation for {len(prompts)} elements...")
+
+    responses = processor.process_with_schema(
+        prompts=prompts,
+        schema=_ElementRulesResponse,
+        batch_size=len(prompts),
+        guided_config=config,
+    )
+
+    results = processor.parse_results_with_schema(
+        schema=_ElementRulesResponse,
+        responses=responses,
+        validate=True,
+    )
+
+    # Convert to ElementRules
+    element_rules = []
+    for (cat_name, elem_name), result in zip(element_info, results):
+        if result is None:
+            if verbose:
+                print(f"  ⚠ Failed to generate rules for {cat_name} > {elem_name}")
+            element_rules.append(
+                ElementRules(
+                    category=cat_name,
+                    element=elem_name,
+                    rules=[],
+                )
+            )
+            continue
+
+        # Combine disambiguation rules and common mistakes
+        all_rules = result.disambiguation_rules + [
+            f"Avoid: {mistake}" for mistake in result.common_mistakes
+        ]
+
+        element_rules.append(
+            ElementRules(
+                category=cat_name,
+                element=elem_name,
+                rules=all_rules,
+            )
+        )
+
+    if verbose:
+        total_rules = sum(len(er.rules) for er in element_rules)
+        print(f"✓ Generated {total_rules} element rules across {len(element_rules)} elements")
+
+    return element_rules
+
+
+def _get_attributes_for_element(
+    taxonomy: dict,
+    category_name: str,
+    element_name: str,
+) -> List[dict]:
+    """Get attributes for a specific element from taxonomy."""
+    if not taxonomy:
+        return []
+
+    for category in taxonomy.get("children", []):
+        if category.get("name") == category_name:
+            for element in category.get("children", []):
+                if element.get("name") == element_name:
+                    return element.get("children", [])
+    return []
+
+
 def generate_all_rules(
     condensed: CondensedTaxonomy,
     processor: ProcessorProtocol,
+    taxonomy: Optional[dict] = None,
     stage1_base_rules: Optional[List[str]] = None,
     stage2_base_rules: Optional[List[str]] = None,
+    stage3_base_rules: Optional[List[str]] = None,
+    include_stage3: bool = True,
     guided_config: Optional[dict] = None,
     verbose: bool = True,
 ) -> ClassificationRules:
     """
-    Generate complete classification rules.
+    Generate complete classification rules for all stages.
 
     Args:
         condensed: CondensedTaxonomy
         processor: LLM processor
+        taxonomy: Raw taxonomy dict (required for Stage 3 attribute info)
         stage1_base_rules: Custom Stage 1 base rules (uses defaults if not provided)
         stage2_base_rules: Custom Stage 2 base rules (uses defaults if not provided)
+        stage3_base_rules: Custom Stage 3 base rules (uses defaults if not provided)
+        include_stage3: Whether to generate Stage 3 element rules
         guided_config: Optional sampling parameters
         verbose: Print progress
 
@@ -313,17 +550,31 @@ def generate_all_rules(
     # Use defaults if not provided
     s1_rules = stage1_base_rules or DEFAULT_STAGE1_BASE_RULES
     s2_rules = stage2_base_rules or DEFAULT_STAGE2_BASE_RULES
+    s3_rules = stage3_base_rules or DEFAULT_STAGE3_BASE_RULES
 
-    # Generate category-specific rules
+    # Generate category-specific rules (Stage 2)
     category_rules = generate_category_rules(condensed, processor, guided_config, verbose)
+
+    # Generate element-specific rules (Stage 3)
+    element_rules = []
+    if include_stage3 and taxonomy:
+        element_rules = generate_element_rules(
+            condensed, taxonomy, processor, guided_config, verbose
+        )
+    elif include_stage3 and not taxonomy:
+        if verbose:
+            print("⚠ Stage 3 rules skipped: taxonomy not provided")
 
     return ClassificationRules(
         stage1_base_rules=s1_rules,
         stage2_base_rules=s2_rules,
         stage2_category_rules=category_rules,
+        stage3_base_rules=s3_rules,
+        stage3_element_rules=element_rules,
         metadata={
             "generated_from": "condensed_taxonomy",
             "num_categories": len(condensed.categories),
+            "num_elements_with_rules": len(element_rules),
         },
     )
 
