@@ -58,6 +58,9 @@ from .pipeline import ClassificationOrchestrator, create_orchestrator
 # =============================================================================
 # Prompt Building - Stage 2 (pure Python)
 # =============================================================================
+# =============================================================================
+# Prompt Export - Hierarchical (pure Python)
+# =============================================================================
 from .prompts import (
     CATEGORY_SPECIFIC_RULES,
     DEFAULT_STAGE1_RULES,
@@ -67,12 +70,17 @@ from .prompts import (
     build_stage2_prompt_function,
     build_stage2_prompt_functions,
     build_stage2_prompt_string,
+    export_prompts_hierarchical,
+    export_stage1_prompt,
     export_stage1_prompt_module,
     export_stage2_prompt_module,
     export_stage2_prompt_modules,
+    export_stage2_prompts,
     get_stage2_examples_for_category,
     get_stage2_prompt_stats,
+    is_manually_edited,
     print_stage2_prompts_preview,
+    sanitize_name,
 )
 
 # =============================================================================
@@ -113,6 +121,23 @@ from .taxonomy.example_generator import (
 # Model Building
 # =============================================================================
 from .taxonomy.model_builder import build_models_from_taxonomy, load_taxonomy_models
+
+# =============================================================================
+# Rule Generation (requires LLM for generation, pure Python for loading)
+# =============================================================================
+from .taxonomy.rule_generator import (
+    DEFAULT_STAGE1_BASE_RULES,
+    DEFAULT_STAGE2_BASE_RULES,
+    CategoryRules,
+    ClassificationRules,
+    create_default_rules,
+    generate_all_rules,
+    generate_category_rules,
+    load_rules,
+    merge_rules,
+    print_rules_preview,
+    save_rules,
+)
 from .taxonomy.schemas import (
     CategoryDetectionOutput,
     ClassificationSpan,
@@ -168,6 +193,18 @@ __all__ = [
     "load_examples",
     "validate_examples",
     "print_examples_preview",
+    # Rules
+    "ClassificationRules",
+    "CategoryRules",
+    "generate_category_rules",
+    "generate_all_rules",
+    "create_default_rules",
+    "save_rules",
+    "load_rules",
+    "merge_rules",
+    "print_rules_preview",
+    "DEFAULT_STAGE1_BASE_RULES",
+    "DEFAULT_STAGE2_BASE_RULES",
     # Stage 1 Prompts
     "build_stage1_prompt_function",
     "build_stage1_prompt_string",
@@ -184,6 +221,12 @@ __all__ = [
     "print_stage2_prompts_preview",
     "DEFAULT_STAGE2_RULES",
     "CATEGORY_SPECIFIC_RULES",
+    # Hierarchical Export
+    "export_prompts_hierarchical",
+    "export_stage1_prompt",
+    "export_stage2_prompts",
+    "is_manually_edited",
+    "sanitize_name",
     # Pipeline / Orchestrator
     "ClassificationOrchestrator",
     "create_orchestrator",

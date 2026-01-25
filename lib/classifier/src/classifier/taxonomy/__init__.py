@@ -62,6 +62,21 @@ from .example_generator import (
 
 # Model building
 from .model_builder import build_models_from_taxonomy, load_taxonomy_models
+
+# Rule generator
+from .rule_generator import (
+    DEFAULT_STAGE1_BASE_RULES,
+    DEFAULT_STAGE2_BASE_RULES,
+    CategoryRules,
+    ClassificationRules,
+    create_default_rules,
+    generate_all_rules,
+    generate_category_rules,
+    load_rules,
+    merge_rules,
+    print_rules_preview,
+    save_rules,
+)
 from .schemas import (
     CategoryDetectionOutput,
     ClassificationSpan,
@@ -117,6 +132,19 @@ __all__ = [
     "load_examples",
     "validate_examples",
     "print_examples_preview",
+    # Rule types
+    "ClassificationRules",
+    "CategoryRules",
+    # Rule functions
+    "generate_category_rules",
+    "generate_all_rules",
+    "create_default_rules",
+    "save_rules",
+    "load_rules",
+    "merge_rules",
+    "print_rules_preview",
+    "DEFAULT_STAGE1_BASE_RULES",
+    "DEFAULT_STAGE2_BASE_RULES",
     # Utilities
     "sanitize_model_name",
     "print_taxonomy_hierarchy",

@@ -163,6 +163,11 @@ def main():
         type=str,
         help="Path to pre-generated examples JSON",
     )
+    parser.add_argument(
+        "--rules",
+        type=str,
+        help="Path to pre-generated rules JSON",
+    )
 
     # Input data
     parser.add_argument(
@@ -230,8 +235,10 @@ def main():
     args = parser.parse_args()
 
     # Validate arguments
-    if not args.taxonomy and not (args.condensed and args.examples):
-        parser.error("Either --taxonomy OR both --condensed and --examples required")
+    if not args.taxonomy and not (args.condensed and args.examples and args.rules):
+        parser.error(
+            "Either --taxonomy OR all of --condensed, --examples, and --rules required"
+        )
 
     # Create output directories
     if args.save_artifacts:
@@ -261,19 +268,27 @@ def main():
         build_stage2_prompt_functions,
         # Condensation
         condense_taxonomy,
+        create_default_rules,
+        # Hierarchical Export
+        export_prompts_hierarchical,
         export_stage1_prompt_module,
         export_stage2_prompt_module,
         # Examples
         generate_all_examples,
+        # Rules
+        generate_all_rules,
         # Utilities
         get_taxonomy_stats,
         load_condensed,
         load_examples,
+        load_rules,
         print_condensed_preview,
         print_examples_preview,
+        print_rules_preview,
         print_stage2_prompts_preview,
         save_condensed,
         save_examples,
+        save_rules,
         validate_examples,
     )
 
@@ -285,11 +300,15 @@ def main():
 
     need_llm_for_condensation = not args.condensed
     need_llm_for_examples = not args.examples
-    need_llm_for_setup = need_llm_for_condensation or need_llm_for_examples
+    need_llm_for_rules = not args.rules
+    need_llm_for_setup = (
+        need_llm_for_condensation or need_llm_for_examples or need_llm_for_rules
+    )
 
     # Variables
     condensed = None
     examples = None
+    rules = None
     taxonomy = None
 
     # =========================================================================
@@ -357,6 +376,29 @@ def main():
                 stats = examples.get_stats()
                 print(f"✓ Loaded {stats['total']} examples")
 
+            # -----------------------------------------------------------------
+            # Step 3: Classification Rules
+            # -----------------------------------------------------------------
+            print("\n" + "=" * 70)
+            print("STEP 3: CLASSIFICATION RULES")
+            print("=" * 70)
+
+            if need_llm_for_rules:
+                print("Generating classification rules...")
+                rules = generate_all_rules(condensed, processor, verbose=True)
+
+                if args.save_artifacts:
+                    save_path = Path(args.save_artifacts) / "rules.json"
+                    save_rules(rules, save_path)
+                    print(f"✓ Saved to: {save_path}")
+            else:
+                print(f"Loading pre-generated from: {args.rules}")
+                rules = load_rules(args.rules)
+                total_rules = sum(len(cr.rules) for cr in rules.stage2_category_rules)
+                print(f"✓ Loaded {total_rules} category-specific rules")
+
+            print_rules_preview(rules)
+
     else:
         # No LLM needed - just load
         print("\n" + "=" * 70)
@@ -372,6 +414,14 @@ def main():
         examples = load_examples(args.examples)
         stats = examples.get_stats()
         print(f"✓ Loaded {stats['total']} examples")
+
+        print("\n" + "=" * 70)
+        print("STEP 3: LOAD CLASSIFICATION RULES")
+        print("=" * 70)
+        rules = load_rules(args.rules)
+        total_rules = sum(len(cr.rules) for cr in rules.stage2_category_rules)
+        print(f"✓ Loaded {total_rules} category-specific rules")
+        print_rules_preview(rules)
 
     # Load taxonomy for model building if needed
     if args.taxonomy and taxonomy is None:
@@ -392,7 +442,7 @@ def main():
     # =========================================================================
 
     print("\n" + "=" * 70)
-    print("STEP 3: BUILD PROMPTS (Pure Python)")
+    print("STEP 4: BUILD PROMPTS (Pure Python)")
     print("=" * 70)
 
     # Stage 1
@@ -406,26 +456,23 @@ def main():
     # Preview
     print_stage2_prompts_preview(condensed, examples)
 
-    # Export prompts if requested
+    # Export prompts if requested (hierarchical structure)
     if args.export_prompts:
-        export_dir = Path(args.export_prompts)
-
-        # Stage 1
-        stage1_path = export_dir / "stage1_prompt.py"
-        export_stage1_prompt_module(condensed, examples, stage1_path)
-        print(f"✓ Exported Stage 1: {stage1_path}")
-
-        # Stage 2
-        stage2_path = export_dir / "stage2_prompts.py"
-        export_stage2_prompt_module(condensed, examples, stage2_path)
-        print(f"✓ Exported Stage 2: {stage2_path}")
+        export_results = export_prompts_hierarchical(
+            condensed=condensed,
+            examples=examples,
+            rules=rules,
+            output_dir=args.export_prompts,
+            verbose=True,
+        )
+        print(f"✓ Exported {export_results['total_files']} prompt files")
 
     # =========================================================================
     # PHASE 3: Build Orchestrator
     # =========================================================================
 
     print("\n" + "=" * 70)
-    print("STEP 4: BUILD ORCHESTRATOR")
+    print("STEP 5: BUILD ORCHESTRATOR")
     print("=" * 70)
 
     # Build dynamic schemas if we have taxonomy

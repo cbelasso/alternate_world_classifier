@@ -34,6 +34,14 @@ Usage:
     prompt = people_prompt("The speaker was brilliant!")
 """
 
+# Hierarchical exporter
+from .exporter import (
+    export_prompts_hierarchical,
+    export_stage1_prompt,
+    export_stage2_prompts,
+    is_manually_edited,
+    sanitize_name,
+)
 from .stage1 import (
     DEFAULT_STAGE1_RULES,
     build_stage1_prompt_function,
@@ -70,4 +78,10 @@ __all__ = [
     "print_stage2_prompts_preview",
     "DEFAULT_STAGE2_RULES",
     "CATEGORY_SPECIFIC_RULES",
+    # Hierarchical exporter
+    "export_prompts_hierarchical",
+    "export_stage1_prompt",
+    "export_stage2_prompts",
+    "is_manually_edited",
+    "sanitize_name",
 ]
