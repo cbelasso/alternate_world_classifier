@@ -178,30 +178,46 @@ class ClassificationSpanWithAttribute(BaseModel):
 
     Combines category (Stage 1) + element (Stage 2) + attribute (Stage 3).
     Includes sentiment at both element and attribute levels for consensus checking.
+    Preserves reasoning and excerpts from each stage for interpretability.
 
     Attributes:
-        excerpt: The exact text excerpt from the comment
         category: The top-level category name
         element: The element name within the category
+        element_excerpt: The excerpt identified in Stage 2
         element_sentiment: Sentiment at the element level (from Stage 2)
+        element_reasoning: Why this excerpt maps to this element (Stage 2)
         attribute: The attribute name within the element
+        attribute_excerpt: The excerpt identified in Stage 3 (may be same or subset)
         attribute_sentiment: Sentiment at the attribute level (from Stage 3)
-        reasoning: Why this excerpt maps to this attribute
+        attribute_reasoning: Why this excerpt maps to this attribute (Stage 3)
         sentiment_consensus: Whether element and attribute sentiments match
     """
 
-    excerpt: str
     category: str
     element: str
+    element_excerpt: str
     element_sentiment: SentimentType
+    element_reasoning: str
     attribute: str
+    attribute_excerpt: str
     attribute_sentiment: SentimentType
-    reasoning: str
+    attribute_reasoning: str
 
     @property
     def sentiment_consensus(self) -> bool:
         """Check if element and attribute sentiments match."""
         return self.element_sentiment == self.attribute_sentiment
+
+    # Convenience aliases for backward compatibility
+    @property
+    def excerpt(self) -> str:
+        """Primary excerpt (attribute-level for most specific)."""
+        return self.attribute_excerpt
+
+    @property
+    def reasoning(self) -> str:
+        """Primary reasoning (attribute-level for most specific)."""
+        return self.attribute_reasoning
 
 
 class FinalClassificationOutputWithAttributes(BaseModel):

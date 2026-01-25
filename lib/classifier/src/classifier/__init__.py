@@ -120,7 +120,12 @@ from .taxonomy.example_generator import (
 # =============================================================================
 # Model Building
 # =============================================================================
-from .taxonomy.model_builder import build_models_from_taxonomy, load_taxonomy_models
+from .taxonomy.model_builder import (
+    build_models_from_taxonomy,
+    build_stage3_schemas_from_taxonomy,
+    get_stage3_schema_stats,
+    load_taxonomy_models,
+)
 
 # =============================================================================
 # Rule Generation (requires LLM for generation, pure Python for loading)
@@ -177,6 +182,8 @@ __all__ = [
     "ElementDetail",
     # Model building
     "build_models_from_taxonomy",
+    "build_stage3_schemas_from_taxonomy",
+    "get_stage3_schema_stats",
     "load_taxonomy_models",
     # Condensation
     "condense_taxonomy",

@@ -290,7 +290,120 @@ def load_taxonomy_models(
     Returns:
         Dictionary of generated models (same as build_models_from_taxonomy)
     """
-    from utils.data_io import load_json
+    import json
+    from pathlib import Path
 
-    taxonomy = load_json(taxonomy_path)
+    taxonomy_path = Path(taxonomy_path)
+
+    if not taxonomy_path.exists():
+        raise FileNotFoundError(f"Taxonomy file not found: {taxonomy_path}")
+
+    with open(taxonomy_path, "r", encoding="utf-8") as f:
+        taxonomy = json.load(f)
+
     return build_models_from_taxonomy(taxonomy, include_attributes=include_attributes)
+
+
+# =============================================================================
+# Stage 3 Schema Builder
+# =============================================================================
+
+
+def build_stage3_schemas_from_taxonomy(
+    taxonomy: dict,
+) -> Dict[str, Dict[str, Type[BaseModel]]]:
+    """
+    Build element-specific Pydantic models for Stage 3 attribute extraction.
+
+    Creates schemas where each element has its own Output model with a Literal
+    type constraining the valid attributes for that element.
+
+    Args:
+        taxonomy: The parsed JSON taxonomy dictionary
+
+    Returns:
+        Nested dict: {category_name: {element_name: OutputModel}}
+
+        Each OutputModel has the structure:
+            class ElementOutput(BaseModel):
+                classifications: List[ElementSpan]
+
+            class ElementSpan(BaseModel):
+                excerpt: str
+                attribute: Literal["Attr1", "Attr2", ...]  # Element-specific!
+                sentiment: SentimentType
+                reasoning: str
+
+    Example:
+        >>> schemas = build_stage3_schemas_from_taxonomy(taxonomy)
+        >>> CommunityOutput = schemas["Attendee Engagement & Interaction"]["Community"]
+        >>> # CommunityOutput.classifications[0].attribute is constrained to
+        >>> # Literal["Comfort Level", "Engagement", "Support", "Value"]
+    """
+    element_to_schema: Dict[str, Dict[str, Type[BaseModel]]] = {}
+
+    categories = taxonomy.get("children", [])
+
+    for category in categories:
+        category_name = category["name"]
+        elements = category.get("children", [])
+
+        element_to_schema[category_name] = {}
+
+        for element in elements:
+            element_name = element["name"]
+            attributes = element.get("children", [])
+
+            if not attributes:
+                # Element has no attributes - skip or create generic schema
+                continue
+
+            attribute_names = [attr["name"] for attr in attributes]
+
+            # Create Literal type for this element's attributes
+            attribute_literal = Literal.__getitem__(tuple(attribute_names))
+
+            # Create the Span model for this element
+            span_model = create_model(
+                f"{sanitize_model_name(category_name)}_{sanitize_model_name(element_name)}_Span",
+                excerpt=(str, ...),
+                attribute=(attribute_literal, ...),
+                sentiment=(SentimentType, ...),
+                reasoning=(str, ...),
+            )
+
+            # Create the Output model wrapping a list of spans
+            output_model = create_model(
+                f"{sanitize_model_name(category_name)}_{sanitize_model_name(element_name)}_Output",
+                classifications=(List[span_model], ...),
+            )
+
+            element_to_schema[category_name][element_name] = output_model
+
+    return element_to_schema
+
+
+def get_stage3_schema_stats(
+    element_to_schema: Dict[str, Dict[str, Type[BaseModel]]],
+) -> dict:
+    """
+    Get statistics about Stage 3 schemas.
+
+    Args:
+        element_to_schema: Result from build_stage3_schemas_from_taxonomy
+
+    Returns:
+        Dict with statistics
+    """
+    total_categories = len(element_to_schema)
+    total_elements = sum(len(elements) for elements in element_to_schema.values())
+
+    elements_by_category = {
+        cat: list(elements.keys()) for cat, elements in element_to_schema.items() if elements
+    }
+
+    return {
+        "total_categories": total_categories,
+        "total_elements_with_attributes": total_elements,
+        "elements_by_category": elements_by_category,
+    }

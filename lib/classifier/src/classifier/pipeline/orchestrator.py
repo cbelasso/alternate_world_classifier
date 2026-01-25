@@ -73,6 +73,7 @@ class ClassificationOrchestrator:
         stage2_prompts: Dict mapping category name to Stage 2 prompt function
         stage3_prompts: Optional nested dict {category: {element: prompt_fn}}
         category_to_schema: Dict mapping category name to Pydantic schema for Stage 2
+        element_to_schema: Optional nested dict {category: {element: schema}} for Stage 3
         guided_config: Sampling parameters for LLM
     """
 
@@ -82,6 +83,7 @@ class ClassificationOrchestrator:
         stage2_prompts: Dict[str, Callable[[str], str]],
         stage3_prompts: Optional[Dict[str, Dict[str, Callable[[str], str]]]] = None,
         category_to_schema: Optional[Dict[str, Type[BaseModel]]] = None,
+        element_to_schema: Optional[Dict[str, Dict[str, Type[BaseModel]]]] = None,
         guided_config: Optional[dict] = None,
     ):
         """
@@ -93,12 +95,15 @@ class ClassificationOrchestrator:
             stage3_prompts: Optional nested dict {category: {element: prompt_fn}} for Stage 3
             category_to_schema: Optional dict mapping category name to Pydantic schema.
                                If not provided, uses generic ElementExtractionOutput.
+            element_to_schema: Optional nested dict {category: {element: schema}} for Stage 3.
+                              If not provided, uses generic AttributeExtractionOutput.
             guided_config: Optional sampling parameters
         """
         self.stage1_prompt = stage1_prompt
         self.stage2_prompts = stage2_prompts
         self.stage3_prompts = stage3_prompts or {}
         self.category_to_schema = category_to_schema or {}
+        self.element_to_schema = element_to_schema or {}
         self.guided_config = guided_config or {
             "temperature": 0.1,
             "top_k": 50,
@@ -115,11 +120,19 @@ class ClassificationOrchestrator:
             self.stage3_available[cat] = set(elements.keys())
 
     def _get_schema_for_category(self, category: str) -> Type[BaseModel]:
-        """Get the Pydantic schema for a category."""
+        """Get the Pydantic schema for a category (Stage 2)."""
         if category in self.category_to_schema:
             return self.category_to_schema[category]
         # Fall back to generic schema
         return ElementExtractionOutput
+
+    def _get_schema_for_element(self, category: str, element: str) -> Type[BaseModel]:
+        """Get the Pydantic schema for an element (Stage 3)."""
+        if category in self.element_to_schema:
+            if element in self.element_to_schema[category]:
+                return self.element_to_schema[category][element]
+        # Fall back to generic schema
+        return AttributeExtractionOutput
 
     def classify_comments(
         self,
@@ -423,27 +436,41 @@ class ClassificationOrchestrator:
         # Build Stage 3 Tasks
         # =====================================================================
 
-        # List of (comment_idx, category, element, element_sentiment, excerpt, prompt)
-        stage3_tasks: List[Tuple[int, str, str, str, str, str]] = []
+        # List of (comment_idx, category, element, element_sentiment, element_excerpt, element_reasoning, prompt)
+        stage3_tasks: List[Tuple[int, str, str, str, str, str, str]] = []
 
         for idx in range(len(comments)):
             comment = comments[idx]
-            for category, element, element_sentiment, excerpt, _ in stage2_results_map[idx]:
+            for (
+                category,
+                element,
+                element_sentiment,
+                element_excerpt,
+                element_reasoning,
+            ) in stage2_results_map[idx]:
                 # Check if we have Stage 3 prompt for this category/element
                 if category in self.stage3_prompts:
                     if element in self.stage3_prompts[category]:
                         prompt_fn = self.stage3_prompts[category][element]
                         # Use the excerpt as input to Stage 3
-                        prompt = prompt_fn(excerpt)
+                        prompt = prompt_fn(element_excerpt)
                         stage3_tasks.append(
-                            (idx, category, element, element_sentiment, excerpt, prompt)
+                            (
+                                idx,
+                                category,
+                                element,
+                                element_sentiment,
+                                element_excerpt,
+                                element_reasoning,
+                                prompt,
+                            )
                         )
 
         if verbose:
             print(f"\nStage 3 tasks: {len(stage3_tasks)} total")
 
         # =====================================================================
-        # Stage 3: Attribute Extraction
+        # Stage 3: Attribute Extraction (grouped by category+element)
         # =====================================================================
 
         if verbose:
@@ -457,53 +484,72 @@ class ClassificationOrchestrator:
         }
 
         if stage3_tasks:
-            task_prompts = [t[5] for t in stage3_tasks]
-            task_meta = [
-                (t[0], t[1], t[2], t[3], t[4]) for t in stage3_tasks
-            ]  # idx, cat, elem, elem_sent, excerpt
+            # Group tasks by (category, element) for element-specific schemas
+            from collections import defaultdict
 
-            responses = processor.process_with_schema(
-                prompts=task_prompts,
-                schema=AttributeExtractionOutput,
-                batch_size=batch_size,
-                guided_config=self.guided_config,
-            )
+            tasks_by_element: Dict[Tuple[str, str], List[tuple]] = defaultdict(list)
 
-            parsed = processor.parse_results_with_schema(
-                schema=AttributeExtractionOutput,
-                responses=responses,
-                validate=True,
-            )
+            for task in stage3_tasks:
+                idx, category, element = task[0], task[1], task[2]
+                tasks_by_element[(category, element)].append(task)
 
-            for (idx, category, element, elem_sent, orig_excerpt), result in zip(
-                task_meta, parsed
-            ):
-                if result is None or not result.classifications:
-                    # No attributes extracted, keep element-level result
-                    stage3_results_map[idx].append(
-                        ClassificationSpanWithAttribute(
-                            excerpt=orig_excerpt,
-                            category=category,
-                            element=element,
-                            element_sentiment=elem_sent,
-                            attribute="(no attribute)",
-                            attribute_sentiment=elem_sent,  # Same as element
-                            reasoning="No specific attribute identified",
-                        )
-                    )
-                else:
-                    for attr_span in result.classifications:
+            # Process each (category, element) group with its specific schema
+            for (category, element), element_tasks in tasks_by_element.items():
+                if verbose:
+                    print(f"  Processing: {category} > {element} ({len(element_tasks)} tasks)")
+
+                task_prompts = [t[6] for t in element_tasks]  # prompt is at index 6
+                task_meta = [(t[0], t[1], t[2], t[3], t[4], t[5]) for t in element_tasks]
+
+                # Get element-specific schema (with Literal attribute types)
+                schema = self._get_schema_for_element(category, element)
+
+                responses = processor.process_with_schema(
+                    prompts=task_prompts,
+                    schema=schema,
+                    batch_size=batch_size,
+                    guided_config=self.guided_config,
+                )
+
+                parsed = processor.parse_results_with_schema(
+                    schema=schema,
+                    responses=responses,
+                    validate=True,
+                )
+
+                for (idx, cat, elem, elem_sent, elem_excerpt, elem_reasoning), result in zip(
+                    task_meta, parsed
+                ):
+                    if result is None or not result.classifications:
+                        # No attributes extracted, keep element-level result
                         stage3_results_map[idx].append(
                             ClassificationSpanWithAttribute(
-                                excerpt=attr_span.excerpt,
-                                category=category,
-                                element=element,
+                                category=cat,
+                                element=elem,
+                                element_excerpt=elem_excerpt,
                                 element_sentiment=elem_sent,
-                                attribute=attr_span.attribute,
-                                attribute_sentiment=attr_span.sentiment,
-                                reasoning=attr_span.reasoning,
+                                element_reasoning=elem_reasoning,
+                                attribute="(no attribute)",
+                                attribute_excerpt=elem_excerpt,  # Same as element
+                                attribute_sentiment=elem_sent,  # Same as element
+                                attribute_reasoning="No specific attribute identified",
                             )
                         )
+                    else:
+                        for attr_span in result.classifications:
+                            stage3_results_map[idx].append(
+                                ClassificationSpanWithAttribute(
+                                    category=cat,
+                                    element=elem,
+                                    element_excerpt=elem_excerpt,
+                                    element_sentiment=elem_sent,
+                                    element_reasoning=elem_reasoning,
+                                    attribute=attr_span.attribute,
+                                    attribute_excerpt=attr_span.excerpt,
+                                    attribute_sentiment=attr_span.sentiment,
+                                    attribute_reasoning=attr_span.reasoning,
+                                )
+                            )
 
         # Also add Stage 2 results that don't have Stage 3 prompts
         for idx in range(len(comments)):
@@ -517,13 +563,15 @@ class ClassificationOrchestrator:
                 if not has_stage3:
                     stage3_results_map[idx].append(
                         ClassificationSpanWithAttribute(
-                            excerpt=excerpt,
                             category=category,
                             element=element,
+                            element_excerpt=excerpt,
                             element_sentiment=element_sentiment,
+                            element_reasoning=reasoning,
                             attribute="(not applicable)",
+                            attribute_excerpt=excerpt,  # Same as element
                             attribute_sentiment=element_sentiment,
-                            reasoning=reasoning,
+                            attribute_reasoning=reasoning,  # Same as element
                         )
                     )
 
@@ -674,18 +722,7 @@ class ClassificationOrchestrator:
             include_empty: If True, include rows for comments with no classifications
 
         Returns:
-            pandas DataFrame with columns:
-                - original_comment
-                - has_classifiable_content
-                - category_reasoning
-                - excerpt
-                - category
-                - element
-                - element_sentiment
-                - attribute
-                - attribute_sentiment
-                - sentiment_consensus
-                - reasoning
+            pandas DataFrame with columns for each stage's reasoning and excerpts
         """
         import pandas as pd
 
@@ -699,14 +736,16 @@ class ClassificationOrchestrator:
                             "original_comment": result.original_comment,
                             "has_classifiable_content": result.has_classifiable_content,
                             "category_reasoning": result.category_reasoning,
-                            "excerpt": None,
                             "category": None,
                             "element": None,
+                            "element_excerpt": None,
                             "element_sentiment": None,
+                            "element_reasoning": None,
                             "attribute": None,
+                            "attribute_excerpt": None,
                             "attribute_sentiment": None,
+                            "attribute_reasoning": None,
                             "sentiment_consensus": None,
-                            "reasoning": None,
                         }
                     )
             else:
@@ -716,14 +755,16 @@ class ClassificationOrchestrator:
                             "original_comment": result.original_comment,
                             "has_classifiable_content": result.has_classifiable_content,
                             "category_reasoning": result.category_reasoning,
-                            "excerpt": classification.excerpt,
                             "category": classification.category,
                             "element": classification.element,
+                            "element_excerpt": classification.element_excerpt,
                             "element_sentiment": classification.element_sentiment,
+                            "element_reasoning": classification.element_reasoning,
                             "attribute": classification.attribute,
+                            "attribute_excerpt": classification.attribute_excerpt,
                             "attribute_sentiment": classification.attribute_sentiment,
+                            "attribute_reasoning": classification.attribute_reasoning,
                             "sentiment_consensus": classification.sentiment_consensus,
-                            "reasoning": classification.reasoning,
                         }
                     )
 

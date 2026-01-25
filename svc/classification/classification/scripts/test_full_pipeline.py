@@ -273,6 +273,7 @@ def main():
         build_stage1_prompt_function,
         # Stage 2 Prompts
         build_stage2_prompt_functions,
+        build_stage3_schemas_from_taxonomy,
         # Condensation
         condense_taxonomy,
         create_default_rules,
@@ -528,16 +529,26 @@ def main():
 
     # Build dynamic schemas if we have taxonomy
     category_to_schema = None
+    element_to_schema = None
+
     if taxonomy:
+        # Stage 2 schemas (category-specific with Literal element types)
         models = build_models_from_taxonomy(taxonomy)
         category_to_schema = models["category_to_schema"]
-        print(f"✓ Built dynamic schemas for {len(category_to_schema)} categories")
+        print(f"✓ Built Stage 2 schemas for {len(category_to_schema)} categories")
+
+        # Stage 3 schemas (element-specific with Literal attribute types)
+        if args.stages == 3:
+            element_to_schema = build_stage3_schemas_from_taxonomy(taxonomy)
+            total_element_schemas = sum(len(elems) for elems in element_to_schema.values())
+            print(f"✓ Built Stage 3 schemas for {total_element_schemas} elements")
 
     orchestrator = ClassificationOrchestrator(
         stage1_prompt=stage1_prompt,
         stage2_prompts=stage2_prompts,
         stage3_prompts=stage3_prompts if args.stages == 3 else None,
         category_to_schema=category_to_schema,
+        element_to_schema=element_to_schema,
     )
     print(f"✓ Orchestrator ready ({args.stages}-stage mode)")
 
@@ -641,12 +652,15 @@ def main():
                 "mismatches": [
                     {
                         "comment": r.original_comment[:100],
-                        "excerpt": c.excerpt,
                         "category": c.category,
                         "element": c.element,
-                        "attribute": c.attribute,
+                        "element_excerpt": c.element_excerpt,
                         "element_sentiment": c.element_sentiment,
+                        "element_reasoning": c.element_reasoning,
+                        "attribute": c.attribute,
+                        "attribute_excerpt": c.attribute_excerpt,
                         "attribute_sentiment": c.attribute_sentiment,
+                        "attribute_reasoning": c.attribute_reasoning,
                     }
                     for r in results
                     for c in r.classifications
