@@ -61,7 +61,7 @@ def load_comments_from_file(
     elif filepath.suffix == ".csv":
         import pandas as pd
 
-        df = pd.read_csv(filepath)
+        df = pd.read_csv(filepath, encoding="utf-8")
     else:
         raise ValueError(f"Unsupported file type: {filepath.suffix}")
 
@@ -670,7 +670,7 @@ def main():
 
     # Save CSV
     csv_path = output_dir / f"classification_results_{args.stages}stage.csv"
-    df.to_csv(csv_path, index=False)
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"✓ Saved: {csv_path}")
 
     # Save JSON

@@ -706,44 +706,56 @@ class ClassificationOrchestrator:
         """
         Convert Stage 1-only results to a pandas DataFrame.
 
-        Creates one row per comment with columns:
-        - comment: Original comment text
-        - has_classifiable_content: Whether comment is classifiable
-        - categories: Comma-separated list of detected categories
-        - num_categories: Number of categories detected
-        - reasoning: Stage 1 reasoning
+        Creates one row per detected category. Comments with multiple
+        categories will have multiple rows (consistent with Stage 2/3 behavior).
 
         Args:
             results: List of CategoryDetectionOutput objects
             comments: Original comment strings (must match results order)
 
         Returns:
-            pandas DataFrame
+            pandas DataFrame with columns:
+                - comment: Original comment text
+                - has_classifiable_content: Whether comment is classifiable
+                - category: Single detected category (one row per category)
+                - reasoning: Stage 1 reasoning
         """
+
         import pandas as pd
 
         rows = []
         for comment, result in zip(comments, results):
             if result is None:
+                # Parse failure
                 rows.append(
                     {
                         "comment": comment,
                         "has_classifiable_content": False,
-                        "categories": "",
-                        "num_categories": 0,
+                        "category": None,
                         "reasoning": "Failed to parse",
                     }
                 )
-            else:
+            elif not result.categories_present:
+                # No categories detected (but parsed successfully)
                 rows.append(
                     {
                         "comment": comment,
                         "has_classifiable_content": result.has_classifiable_content,
-                        "categories": ", ".join(result.categories_present),
-                        "num_categories": len(result.categories_present),
+                        "category": None,
                         "reasoning": result.reasoning,
                     }
                 )
+            else:
+                # One row per detected category
+                for category in result.categories_present:
+                    rows.append(
+                        {
+                            "comment": comment,
+                            "has_classifiable_content": result.has_classifiable_content,
+                            "category": category,
+                            "reasoning": result.reasoning,
+                        }
+                    )
 
         return pd.DataFrame(rows)
 
