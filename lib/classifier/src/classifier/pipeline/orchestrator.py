@@ -644,6 +644,109 @@ class ClassificationOrchestrator:
         results = self.classify_comments([comment], processor, batch_size=1, verbose=verbose)
         return results[0]
 
+    def classify_comments_stage1_only(
+        self,
+        comments: List[str],
+        processor: Any,
+        batch_size: int = 25,
+        verbose: bool = True,
+    ) -> List[CategoryDetectionOutput]:
+        """
+        Run Stage 1 (category detection) only.
+
+        This is useful for:
+        - Quick category-level analysis
+        - Testing Stage 1 prompts before running full pipeline
+        - Understanding category distribution in a dataset
+
+        Args:
+            comments: List of comment strings
+            processor: LLM processor with process_with_schema method
+            batch_size: Batch size for processing
+            verbose: Print progress information
+
+        Returns:
+            List of CategoryDetectionOutput objects (one per comment)
+        """
+        if verbose:
+            print("=" * 60)
+            print("STAGE 1: Category Detection (Only)")
+            print("=" * 60)
+
+        stage1_prompts = [self.stage1_prompt(c) for c in comments]
+
+        stage1_responses = processor.process_with_schema(
+            prompts=stage1_prompts,
+            schema=CategoryDetectionOutput,
+            batch_size=batch_size,
+            guided_config=self.guided_config,
+        )
+
+        stage1_results = processor.parse_results_with_schema(
+            schema=CategoryDetectionOutput,
+            responses=stage1_responses,
+            validate=True,
+        )
+
+        if verbose:
+            successful = sum(1 for r in stage1_results if r is not None)
+            classifiable = sum(
+                1 for r in stage1_results if r is not None and r.has_classifiable_content
+            )
+            print(f"✓ Stage 1 complete: {successful}/{len(comments)} parsed successfully")
+            print(f"✓ Classifiable: {classifiable}/{successful} comments")
+
+        return stage1_results
+
+    def results_to_dataframe_stage1(
+        self,
+        results: List[CategoryDetectionOutput],
+        comments: List[str],
+    ):
+        """
+        Convert Stage 1-only results to a pandas DataFrame.
+
+        Creates one row per comment with columns:
+        - comment: Original comment text
+        - has_classifiable_content: Whether comment is classifiable
+        - categories: Comma-separated list of detected categories
+        - num_categories: Number of categories detected
+        - reasoning: Stage 1 reasoning
+
+        Args:
+            results: List of CategoryDetectionOutput objects
+            comments: Original comment strings (must match results order)
+
+        Returns:
+            pandas DataFrame
+        """
+        import pandas as pd
+
+        rows = []
+        for comment, result in zip(comments, results):
+            if result is None:
+                rows.append(
+                    {
+                        "comment": comment,
+                        "has_classifiable_content": False,
+                        "categories": "",
+                        "num_categories": 0,
+                        "reasoning": "Failed to parse",
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "comment": comment,
+                        "has_classifiable_content": result.has_classifiable_content,
+                        "categories": ", ".join(result.categories_present),
+                        "num_categories": len(result.categories_present),
+                        "reasoning": result.reasoning,
+                    }
+                )
+
+        return pd.DataFrame(rows)
+
     def results_to_dataframe(
         self,
         results: List[FinalClassificationOutput],
