@@ -48,6 +48,25 @@ For production (with pre-built artifacts):
 # =============================================================================
 
 # =============================================================================
+# Artifacts (YAML-based artifact management)
+# =============================================================================
+from .artifacts import (
+    build_classifier_objects,
+    # Building
+    build_from_folder,
+    check_examples_quality,
+    # Generation
+    generate_artifact_content,
+    # Scaffolding
+    scaffold_artifacts,
+    scaffold_from_existing,
+    # Sync
+    sync_artifacts,
+    # Validation
+    validate_artifacts,
+)
+
+# =============================================================================
 # Pipeline (Orchestrator)
 # =============================================================================
 from .pipeline import ClassificationOrchestrator, create_orchestrator
@@ -241,4 +260,13 @@ __all__ = [
     "get_taxonomy_stats",
     "print_taxonomy_hierarchy",
     "print_valid_combinations",
+    # Artifacts
+    "scaffold_artifacts",
+    "scaffold_from_existing",
+    "build_from_folder",
+    "build_classifier_objects",
+    "validate_artifacts",
+    "check_examples_quality",
+    "sync_artifacts",
+    "generate_artifact_content",
 ]
