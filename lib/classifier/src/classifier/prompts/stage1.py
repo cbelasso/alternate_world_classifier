@@ -18,13 +18,10 @@ Usage:
     stage1_prompt = build_stage1_prompt_function(condensed, use_handcrafted=True)
 
     # Or with generated examples (automatically curated)
-    stage1_prompt = build_stage1_prompt_function(condensed, examples, max_examples_per_category=1)
+    stage1_prompt = build_stage1_prompt_function(condensed, examples, use_handcrafted=False)
 
     # Use at runtime
-    prompt = stage1_prompt("The WiFi was terrible!")
-
-    # Or export as a standalone Python module
-    export_stage1_prompt_module(condensed, "prompts/stage1_prompt.py", use_handcrafted=True)
+    prompt = stage1_prompt("The keynote was amazing!")
 """
 
 from pathlib import Path
@@ -32,17 +29,56 @@ from typing import Callable, List, Optional
 
 from ..taxonomy.condenser import CondensedTaxonomy
 from ..taxonomy.example_generator import ClassificationExample, ExampleSet
-from .base import (
-    format_categories_section,
-    format_rules_section,
-    format_stage1_examples_section,
-)
+from .base import format_stage1_example
 
 # =============================================================================
-# Default Classification Rules
+# Handcrafted Stage 1 Content (Extracted from Proven Standalone Script)
 # =============================================================================
 
-DEFAULT_STAGE1_RULES = [
+HANDCRAFTED_STAGE1_CATEGORIES = """**Attendee Engagement & Interaction**
+Feedback about connecting with others, community building, and social aspects.
+- Community: Sense of belonging, community spirit, feeling welcomed
+- Knowledge Exchange: Sharing experiences, learning from peers, collaborative learning
+- Networking: Meeting new people, professional connections, peer discussions
+- Social Events: Gala dinners, receptions, informal gatherings, social activities
+
+**Event Logistics & Infrastructure**
+Feedback about physical/technical infrastructure and venue-related services.
+- Conference Application/Software: Mobile apps, event platforms, digital tools for attendees
+- Conference Venue: Location, rooms, facilities, accessibility, seating
+- Food/Beverages: Meals, snacks, drinks, catering quality, dietary options
+- Hotel: Accommodation, lodging arrangements
+- Technological Tools: A/V equipment, microphones, projectors, tech setup
+- Transportation: Getting to/from venue, shuttles, parking, travel arrangements
+- Wi-Fi: Internet connectivity, network access
+
+**Event Operations & Management**
+Feedback about how the conference was organized and run.
+- Conference: General event organization, overall management, event quality
+- Conference Registration: Sign-up process, check-in, badge pickup
+- Conference Scheduling: Session timing, agenda, time management, scheduling conflicts
+- Messaging & Awareness: Communication, announcements, information clarity, signage
+
+**Learning & Content Delivery**
+Feedback about educational content and how it was delivered.
+- Demonstration: Live demos, product showcases, hands-on examples
+- Gained Knowledge: What attendees learned, takeaways, actionable insights
+- Open Discussion: Q&A sessions, audience participation, interactive discussions
+- Panel Discussions: Panel format sessions, multi-speaker discussions
+- Presentations: Individual talks, keynotes, speaker presentations
+- Resources/Materials: Handouts, slides, documentation, learning materials
+- Session/Workshop: Breakout sessions, workshops, training sessions
+- Topics: Subject matter, themes, content relevance, topic selection
+
+**People**
+Feedback about specific people or groups at the conference.
+- Conference Staff: Organizers, volunteers, support staff, event team
+- Experts/Consultants: Industry experts, product specialists, consultants
+- Participants/Attendees: Fellow attendees, other conference-goers
+- Speakers/Presenters: Keynote speakers, session presenters, panelists
+- Unspecified Person: References to people without clear role identification"""
+
+HANDCRAFTED_STAGE1_RULES = [
     "A comment can belong to MULTIPLE categories if it discusses multiple aspects.",
     "Focus on what the comment is ABOUT, not just words mentioned.",
     '"Community" refers to the feeling of belonging; "Networking" refers to the act of meeting people.',
@@ -51,105 +87,47 @@ DEFAULT_STAGE1_RULES = [
     "If a comment mentions both the content AND the presenter, include BOTH categories.",
 ]
 
-
-# =============================================================================
-# Handcrafted Examples (High-Quality Category-Level Examples)
-# =============================================================================
-
 HANDCRAFTED_STAGE1_EXAMPLES = [
-    # Single-category examples
-    ClassificationExample(
-        comment="The networking sessions were fantastic and I made great connections with peers from other institutions.",
-        categories_present=["Attendee Engagement & Interaction"],
-        has_classifiable_content=True,
-        stage1_reasoning="Discusses networking and peer connections",
-        element_details=[],
-        example_type="simple",
-        source_category="Attendee Engagement & Interaction",
-    ),
-    ClassificationExample(
-        comment="The WiFi kept dropping during sessions and the room was too cold.",
-        categories_present=["Event Logistics & Infrastructure"],
-        has_classifiable_content=True,
-        stage1_reasoning="Mentions WiFi connectivity and venue temperature issues",
-        element_details=[],
-        example_type="simple",
-        source_category="Event Logistics & Infrastructure",
-    ),
-    ClassificationExample(
-        comment="The registration process was slow and confusing.",
-        categories_present=["Event Operations & Management"],
-        has_classifiable_content=True,
-        stage1_reasoning="Feedback about registration process",
-        element_details=[],
-        example_type="simple",
-        source_category="Event Operations & Management",
-    ),
-    ClassificationExample(
-        comment="The hands-on workshops were excellent and I learned so much from the practical exercises.",
-        categories_present=["Learning & Content Delivery"],
-        has_classifiable_content=True,
-        stage1_reasoning="Feedback about workshop content and learning experience",
-        element_details=[],
-        example_type="simple",
-        source_category="Learning & Content Delivery",
-    ),
-    ClassificationExample(
-        comment="The conference staff was incredibly helpful and always available to answer questions.",
-        categories_present=["People"],
-        has_classifiable_content=True,
-        stage1_reasoning="Praise for conference staff",
-        element_details=[],
-        example_type="simple",
-        source_category="People",
-    ),
-    # Multi-category examples
-    ClassificationExample(
-        comment="The keynote speaker was brilliant and the presentation on machine learning was very insightful.",
-        categories_present=["Learning & Content Delivery", "People"],
-        has_classifiable_content=True,
-        stage1_reasoning="Discusses both the presentation content and the speaker",
-        element_details=[],
-        example_type="multi_category",
-    ),
-    ClassificationExample(
-        comment="The conference was well organized but I wish there were more hands-on workshops. The Explorance team was very helpful.",
-        categories_present=[
-            "Event Operations & Management",
-            "Learning & Content Delivery",
-            "People",
-        ],
-        has_classifiable_content=True,
-        stage1_reasoning="Covers organization quality, workshop content request, and staff praise",
-        element_details=[],
-        example_type="multi_category",
-    ),
-    ClassificationExample(
-        comment="I loved connecting with the Blue community and sharing knowledge with other users.",
-        categories_present=["Attendee Engagement & Interaction"],
-        has_classifiable_content=True,
-        stage1_reasoning="Discusses community connection and knowledge sharing among attendees",
-        element_details=[],
-        example_type="simple",
-        source_category="Attendee Engagement & Interaction",
-    ),
-    # Negative examples
-    ClassificationExample(
-        comment="Seeing is believing!",
-        categories_present=[],
-        has_classifiable_content=False,
-        stage1_reasoning="Generic phrase without specific conference feedback context",
-        element_details=[],
-        example_type="negative",
-    ),
-    ClassificationExample(
-        comment="Data integrity never goes out of style.",
-        categories_present=[],
-        has_classifiable_content=False,
-        stage1_reasoning="General statement not specifically about conference feedback",
-        element_details=[],
-        example_type="negative",
-    ),
+    {
+        "comment": "The networking sessions were fantastic and I made great connections with peers from other institutions.",
+        "output": '{"categories_present": ["Attendee Engagement & Interaction"], "has_classifiable_content": true, "reasoning": "Discusses networking and peer connections"}',
+    },
+    {
+        "comment": "The WiFi kept dropping during sessions and the room was too cold.",
+        "output": '{"categories_present": ["Event Logistics & Infrastructure"], "has_classifiable_content": true, "reasoning": "Mentions WiFi connectivity and venue temperature issues"}',
+    },
+    {
+        "comment": "The keynote speaker was brilliant and the presentation on machine learning was very insightful.",
+        "output": '{"categories_present": ["Learning & Content Delivery", "People"], "has_classifiable_content": true, "reasoning": "Discusses both the presentation content and the speaker"}',
+    },
+    {
+        "comment": "The conference was well organized but I wish there were more hands-on workshops. The Explorance team was very helpful.",
+        "output": '{"categories_present": ["Event Operations & Management", "Learning & Content Delivery", "People"], "has_classifiable_content": true, "reasoning": "Covers organization quality, workshop content request, and staff praise"}',
+    },
+    {
+        "comment": "I loved connecting with the Blue community and sharing knowledge with other users.",
+        "output": '{"categories_present": ["Attendee Engagement & Interaction"], "has_classifiable_content": true, "reasoning": "Discusses community connection and knowledge sharing among attendees"}',
+    },
+    {
+        "comment": "The registration process was slow and confusing.",
+        "output": '{"categories_present": ["Event Operations & Management"], "has_classifiable_content": true, "reasoning": "Feedback about registration process"}',
+    },
+    {
+        "comment": "Seeing is believing!",
+        "output": '{"categories_present": ["Event Operations & Management"], "has_classifiable_content": true, "reasoning": "Vague positive sentiment about the conference overall"}',
+    },
+    {
+        "comment": "Data integrity never goes out of style.",
+        "output": '{"categories_present": [], "has_classifiable_content": false, "reasoning": "General statement not specifically about conference feedback"}',
+    },
+    {
+        "comment": "The gala dinner was amazing and the hotel was conveniently located near the venue.",
+        "output": '{"categories_present": ["Attendee Engagement & Interaction", "Event Logistics & Infrastructure"], "has_classifiable_content": true, "reasoning": "Discusses social event (gala dinner) and accommodation/venue location"}',
+    },
+    {
+        "comment": "I learned so much from the panel discussions and really appreciated the open Q&A format.",
+        "output": '{"categories_present": ["Learning & Content Delivery"], "has_classifiable_content": true, "reasoning": "Discusses learning from panel discussions and Q&A sessions"}',
+    },
 ]
 
 
@@ -166,19 +144,19 @@ COMMENT TO ANALYZE:
 
 CATEGORIES AND THEIR SCOPE:
 
-{categories_section}
+{categories}
 
 ---
 
 CLASSIFICATION RULES:
 
-{rules_section}
+{rules}
 
 ---
 
 EXAMPLES:
 
-{examples_section}
+{examples}
 
 ---
 
@@ -191,46 +169,90 @@ Analyze the comment and return ONLY valid JSON."""
 
 
 def _curate_generated_examples(
-    examples: ExampleSet | List[ClassificationExample],
-    max_examples_per_category: int = 1,
+    examples: List[ClassificationExample],
+    max_per_category: int = 1,
 ) -> List[ClassificationExample]:
     """
     Curate generated examples to avoid element-level bloat.
 
-    Takes at most max_examples_per_category simple examples per category,
-    plus all multi-category and negative examples.
+    Strategy:
+    - Group examples by source_category (or first category in categories_present)
+    - Take max N examples per category
+    - Always include multi-category examples
+    - Always include negative examples (has_classifiable_content=False)
 
     Args:
-        examples: ExampleSet or list of examples
-        max_examples_per_category: Max simple examples per category
+        examples: List of all simple examples
+        max_per_category: Max examples per single category (default: 1)
 
     Returns:
-        Curated list of examples
+        Curated list of examples suitable for Stage 1
     """
-    if isinstance(examples, ExampleSet):
-        simple = examples.get_simple_examples()
-        multi = examples.get_multi_category_examples()
-        negative = examples.get_negative_examples()
-    else:
-        # Separate by type
-        simple = [ex for ex in examples if ex.example_type == "simple"]
-        multi = [ex for ex in examples if ex.example_type == "multi_category"]
-        negative = [ex for ex in examples if ex.example_type == "negative"]
-
-    # Group simple examples by category and take max N per category
     from collections import defaultdict
 
+    # Group by category
     by_category = defaultdict(list)
-    for ex in simple:
-        if ex.source_category:
+    multi_category = []
+    negative = []
+
+    for ex in examples:
+        # Negative examples (always include)
+        if not ex.has_classifiable_content:
+            negative.append(ex)
+            continue
+
+        # Multi-category examples (always include)
+        if len(ex.categories_present) > 1:
+            multi_category.append(ex)
+            continue
+
+        # Single category examples (limit per category)
+        if ex.categories_present:
+            cat = ex.categories_present[0]
+            by_category[cat].append(ex)
+        elif ex.source_category:
             by_category[ex.source_category].append(ex)
 
-    curated_simple = []
-    for cat_examples in by_category.values():
-        curated_simple.extend(cat_examples[:max_examples_per_category])
+    # Take max N per category
+    curated = []
+    for cat, cat_examples in by_category.items():
+        curated.extend(cat_examples[:max_per_category])
 
-    # Combine: curated simple + all multi + all negative
-    return curated_simple + multi + negative
+    # Add all multi-category and negative
+    curated.extend(multi_category)
+    curated.extend(negative)
+
+    return curated
+
+
+# =============================================================================
+# Formatting Helpers
+# =============================================================================
+
+
+def _format_stage1_examples_handcrafted() -> str:
+    """Format handcrafted Stage 1 examples."""
+    formatted = []
+    for ex in HANDCRAFTED_STAGE1_EXAMPLES:
+        formatted.append(f'Comment: "{ex["comment"]}"\n{ex["output"]}')
+    return "\n\n".join(formatted)
+
+
+def _format_stage1_examples_generated(examples: List[ClassificationExample]) -> str:
+    """Format generated Stage 1 examples."""
+    if not examples:
+        return "(No examples available)"
+
+    formatted = []
+    for ex in examples:
+        formatted.append(format_stage1_example(ex))
+
+    return "\n\n".join(formatted)
+
+
+def _format_rules(rules: List[str]) -> str:
+    """Format rules as numbered list."""
+    return "\n".join(f"{i}. {rule}" for i, rule in enumerate(rules, 1))
 
 
 # =============================================================================
@@ -240,7 +262,7 @@ def _curate_generated_examples(
 
 def build_stage1_prompt_string(
     comment: str,
-    condensed: CondensedTaxonomy,
+    condensed: Optional[CondensedTaxonomy] = None,
     examples: Optional[List[ClassificationExample]] = None,
     rules: Optional[List[str]] = None,
     use_handcrafted: bool = True,
@@ -248,113 +270,132 @@ def build_stage1_prompt_string(
     """
     Build a complete Stage 1 prompt for a specific comment.
 
-    This is useful for one-off testing or when you need direct control.
-
     Args:
-        comment: The conference feedback comment to analyze
-        condensed: CondensedTaxonomy with category/element descriptions
-        examples: List of ClassificationExample for few-shot learning (optional if use_handcrafted=True)
-        rules: Optional custom rules (uses DEFAULT_STAGE1_RULES if not provided)
-        use_handcrafted: If True, use HANDCRAFTED_STAGE1_EXAMPLES instead of provided examples
+        comment: The conference feedback comment
+        condensed: CondensedTaxonomy (optional, for generated content)
+        examples: List of examples (optional, for generated content)
+        rules: Optional rules (optional, for generated content)
+        use_handcrafted: If True, use handcrafted sections (default: True)
 
     Returns:
-        Complete prompt string ready for LLM
-
-    Example:
-        >>> prompt = build_stage1_prompt_string(
-        ...     "The WiFi was terrible!",
-        ...     condensed,
-        ...     use_handcrafted=True,
-        ... )
-        >>> result = processor.process_with_schema([prompt], CategoryDetectionOutput)
+        Complete prompt string
     """
-    rules = rules or DEFAULT_STAGE1_RULES
-
     if use_handcrafted:
-        example_list = HANDCRAFTED_STAGE1_EXAMPLES
-    elif examples is None:
-        raise ValueError("Must provide examples or set use_handcrafted=True")
+        categories_text = HANDCRAFTED_STAGE1_CATEGORIES
+        rules_text = _format_rules(HANDCRAFTED_STAGE1_RULES)
+        examples_text = _format_stage1_examples_handcrafted()
     else:
-        example_list = examples
+        # Use generated content
+        if not condensed or not examples:
+            raise ValueError("Must provide condensed and examples when use_handcrafted=False")
 
-    categories_section = format_categories_section(condensed)
-    rules_section = format_rules_section(rules)
-    examples_section = format_stage1_examples_section(example_list)
+        # Format categories
+        categories_lines = []
+        for cat in condensed.categories:
+            categories_lines.append(f"**{cat.name}**")
+            categories_lines.append(cat.short_description)
+            for elem in cat.elements:
+                categories_lines.append(f"- {elem.name}: {elem.short_description}")
+            categories_lines.append("")  # blank line
+        categories_text = "\n".join(categories_lines)
 
+        # Rules
+        default_rules = rules or HANDCRAFTED_STAGE1_RULES
+        rules_text = _format_rules(default_rules)
+
+        # Curate and format examples
+        curated_examples = _curate_generated_examples(examples, max_per_category=1)
+        examples_text = _format_stage1_examples_generated(curated_examples)
+
+    # Build full prompt
     return STAGE1_TEMPLATE.format(
         comment=comment,
-        categories_section=categories_section,
-        rules_section=rules_section,
-        examples_section=examples_section,
+        categories=categories_text,
+        rules=rules_text,
+        examples=examples_text,
     )
 
 
 def build_stage1_prompt_function(
     condensed: CondensedTaxonomy,
     examples: Optional[ExampleSet | List[ClassificationExample]] = None,
-    rules: Optional[List[str]] = None,
+    rules: Optional[any] = None,  # For compatibility
     use_handcrafted: bool = True,
-    max_examples_per_category: int = 1,
 ) -> Callable[[str], str]:
     """
     Build a reusable Stage 1 prompt function.
 
-    This creates a closure that "bakes in" the taxonomy and examples,
-    returning a simple function that takes a comment and returns a prompt.
+    This creates a function that takes a comment and returns a prompt.
+    All static content is pre-formatted for efficiency.
 
     Args:
-        condensed: CondensedTaxonomy with category/element descriptions
-        examples: ExampleSet or list of ClassificationExample (optional if use_handcrafted=True)
-        rules: Optional custom rules (uses DEFAULT_STAGE1_RULES if not provided)
-        use_handcrafted: If True, use HANDCRAFTED_STAGE1_EXAMPLES (default: True)
-        max_examples_per_category: If using generated examples, max simple examples per category
+        condensed: CondensedTaxonomy
+        examples: Optional ExampleSet or list (needed if use_handcrafted=False)
+        rules: Optional rules (for compatibility, not used with handcrafted)
+        use_handcrafted: If True, use handcrafted sections (default: True)
 
     Returns:
-        Function that takes a comment string and returns a complete prompt
+        Function that takes a comment string and returns a prompt string
 
     Example:
-        >>> # Use handcrafted examples (recommended)
+        >>> # Use handcrafted (recommended)
         >>> stage1_prompt = build_stage1_prompt_function(condensed, use_handcrafted=True)
         >>>
-        >>> # Or use generated examples (auto-curated)
-        >>> stage1_prompt = build_stage1_prompt_function(condensed, examples, use_handcrafted=False, max_examples_per_category=1)
+        >>> # Or use generated (auto-curated)
+        >>> stage1_prompt = build_stage1_prompt_function(condensed, examples, use_handcrafted=False)
         >>>
-        >>> prompts = [stage1_prompt(c) for c in comments]
-        >>> results = processor.process_with_schema(prompts, CategoryDetectionOutput)
+        >>> prompt = stage1_prompt("The conference was great!")
     """
-    rules = rules or DEFAULT_STAGE1_RULES
-
-    # Select examples
     if use_handcrafted:
-        example_list = HANDCRAFTED_STAGE1_EXAMPLES
-    elif examples is None:
-        raise ValueError("Must provide examples or set use_handcrafted=True")
+        # Pre-format all static sections
+        categories_text = HANDCRAFTED_STAGE1_CATEGORIES
+        rules_text = _format_rules(HANDCRAFTED_STAGE1_RULES)
+        examples_text = _format_stage1_examples_handcrafted()
     else:
-        # Auto-curate generated examples to avoid bloat
-        example_list = _curate_generated_examples(examples, max_examples_per_category)
+        # Use generated content
+        if not examples:
+            raise ValueError("Must provide examples when use_handcrafted=False")
 
-    # Pre-compute the static parts (these don't change per-comment)
-    categories_section = format_categories_section(condensed)
-    rules_section = format_rules_section(rules)
-    examples_section = format_stage1_examples_section(example_list)
+        # Convert ExampleSet to list if needed
+        if isinstance(examples, ExampleSet):
+            example_list = examples.examples
+        else:
+            example_list = examples
 
-    # Build the template with static parts filled in
+        # Format categories
+        categories_lines = []
+        for cat in condensed.categories:
+            categories_lines.append(f"**{cat.name}**")
+            categories_lines.append(cat.short_description)
+            for elem in cat.elements:
+                categories_lines.append(f"- {elem.name}: {elem.short_description}")
+            categories_lines.append("")
+        categories_text = "\n".join(categories_lines)
+
+        # Rules (use handcrafted as default)
+        rules_text = _format_rules(HANDCRAFTED_STAGE1_RULES)
+
+        # Curate and format examples
+        curated_examples = _curate_generated_examples(example_list, max_per_category=1)
+        examples_text = _format_stage1_examples_generated(curated_examples)
+
+    # Build static template (everything except {comment})
     static_template = STAGE1_TEMPLATE.format(
-        comment="{comment}",  # Leave this as placeholder
-        categories_section=categories_section,
-        rules_section=rules_section,
-        examples_section=examples_section,
+        comment="{comment}",  # Keep as placeholder
+        categories=categories_text,
+        rules=rules_text,
+        examples=examples_text,
     )
 
-    def prompt_function(comment: str) -> str:
-        """Generate Stage 1 classification prompt for a comment."""
+    # Return closure with pre-formatted template
+    def stage1_prompt(comment: str) -> str:
         return static_template.format(comment=comment)
 
-    return prompt_function
+    return stage1_prompt
 
 
 # =============================================================================
-# Export as Python Module
+# Export Functions
 # =============================================================================
 
 
@@ -364,57 +405,68 @@ def export_stage1_prompt_module(
     examples: Optional[ExampleSet | List[ClassificationExample]] = None,
     rules: Optional[List[str]] = None,
     use_handcrafted: bool = True,
-    max_examples_per_category: int = 1,
     function_name: str = "stage1_category_detection_prompt",
 ) -> Path:
     """
-    Export the Stage 1 prompt as a standalone Python module.
-
-    This creates a .py file that can be imported and used without
-    needing the original condensed taxonomy or examples files.
+    Export Stage 1 prompt as a standalone Python module.
 
     Args:
         condensed: CondensedTaxonomy
         filepath: Output path for the .py file
-        examples: ExampleSet or list of ClassificationExample (optional if use_handcrafted=True)
-        rules: Optional custom rules
-        use_handcrafted: If True, use HANDCRAFTED_STAGE1_EXAMPLES (default: True)
-        max_examples_per_category: If using generated examples, max simple examples per category
-        function_name: Name of the generated function
+        examples: Optional examples (needed if use_handcrafted=False)
+        rules: Optional rules
+        use_handcrafted: If True, use handcrafted sections (default: True)
+        function_name: Name for the prompt function
 
     Returns:
         Path to the generated module
-
-    Example:
-        >>> export_stage1_prompt_module(condensed, "prompts/stage1.py", use_handcrafted=True)
-        >>> # Later, in production:
-        >>> from prompts.stage1 import stage1_category_detection_prompt
-        >>> prompt = stage1_category_detection_prompt("Great conference!")
     """
-    rules = rules or DEFAULT_STAGE1_RULES
-
-    # Select examples
+    # Build prompt components
     if use_handcrafted:
-        example_list = HANDCRAFTED_STAGE1_EXAMPLES
-    elif examples is None:
-        raise ValueError("Must provide examples or set use_handcrafted=True")
+        categories_text = HANDCRAFTED_STAGE1_CATEGORIES
+        rules_text = _format_rules(HANDCRAFTED_STAGE1_RULES)
+        examples_text = _format_stage1_examples_handcrafted()
     else:
-        # Auto-curate generated examples
-        example_list = _curate_generated_examples(examples, max_examples_per_category)
+        if not examples:
+            raise ValueError("Must provide examples when use_handcrafted=False")
 
-    # Pre-compute sections
-    categories_section = format_categories_section(condensed)
-    rules_section = format_rules_section(rules)
-    examples_section = format_stage1_examples_section(example_list)
+        # Convert ExampleSet to list if needed
+        if isinstance(examples, ExampleSet):
+            example_list = examples.examples
+        else:
+            example_list = examples
 
-    # Build the module content
+        # Format categories
+        categories_lines = []
+        for cat in condensed.categories:
+            categories_lines.append(f"**{cat.name}**")
+            categories_lines.append(cat.short_description)
+            for elem in cat.elements:
+                categories_lines.append(f"- {elem.name}: {elem.short_description}")
+            categories_lines.append("")
+        categories_text = "\n".join(categories_lines)
+
+        # Rules
+        default_rules = rules or HANDCRAFTED_STAGE1_RULES
+        rules_text = _format_rules(default_rules)
+
+        # Curate and format examples
+        curated_examples = _curate_generated_examples(example_list, max_per_category=1)
+        examples_text = _format_stage1_examples_generated(curated_examples)
+
+    # Get category names for metadata
+    category_names = [cat.name for cat in condensed.categories]
+
+    # Build module content
+    source_desc = "handcrafted examples" if use_handcrafted else "curated generated examples"
+
     module_content = f'''# =============================================================================
-# Stage 1: Category Detection Prompt
+# Stage 1: Category Detection
 # =============================================================================
 #
-# Detects which categories are present in conference feedback comments.
+# Identifies which categories of feedback are present in a conference comment.
 #
-# AUTO-GENERATED from {"handcrafted examples" if use_handcrafted else "curated generated examples"}
+# AUTO-GENERATED from {source_desc}
 #
 # Generated: {__import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 #
@@ -427,46 +479,47 @@ def export_stage1_prompt_module(
 # MANUALLY_EDITED: False
 # =============================================================================
 
+CATEGORIES = [
+    {", ".join(f'"{name}"' for name in category_names)}
+]
+
 
 def {function_name}(comment: str) -> str:
     """
     Generate Stage 1 category detection prompt.
-
+    
     Args:
         comment: The conference feedback comment to analyze
-
+        
     Returns:
         Formatted prompt string ready for LLM processing
     """
-    return f"""You are an expert conference feedback analyzer. Your task is to identify which categories of feedback are present in the following comment.
+    return f"""You are an expert conference feedback analyzer. Your task is to identify which categories of feedback are present in a conference attendee comment.
 
 COMMENT TO ANALYZE:
 {{comment}}
 
 ---
 
-CATEGORIES TO CONSIDER:
+CATEGORIES AND THEIR SCOPE:
 
-{categories_section}
+{categories_text}
 
 ---
 
 CLASSIFICATION RULES:
 
-{rules_section}
+{rules_text}
 
 ---
 
 EXAMPLES:
 
-{examples_section}
+{examples_text}
 
 ---
 
-Analyze the comment and return ONLY valid JSON with:
-- categories_present: list of category names that apply
-- has_classifiable_content: true/false
-- reasoning: brief explanation"""
+Analyze the comment and return ONLY valid JSON."""
 
 
 # Convenience alias
@@ -484,116 +537,54 @@ STAGE1_PROMPT = {function_name}
 
 
 # =============================================================================
-# Prompt Statistics
+# Stats and Preview Functions
 # =============================================================================
 
 
 def get_stage1_prompt_stats(
     condensed: CondensedTaxonomy,
     examples: Optional[ExampleSet | List[ClassificationExample]] = None,
-    rules: Optional[List[str]] = None,
     use_handcrafted: bool = True,
-    max_examples_per_category: int = 1,
 ) -> dict:
-    """
-    Get statistics about the Stage 1 prompt.
-
-    Useful for understanding token usage and prompt composition.
-
-    Args:
-        condensed: CondensedTaxonomy
-        examples: ExampleSet or list (optional if use_handcrafted=True)
-        rules: Optional custom rules
-        use_handcrafted: If True, use handcrafted examples
-        max_examples_per_category: If using generated, max per category
-
-    Returns:
-        Dict with statistics
-    """
-    rules = rules or DEFAULT_STAGE1_RULES
-
-    if use_handcrafted:
-        example_list = HANDCRAFTED_STAGE1_EXAMPLES
-    elif examples is None:
-        raise ValueError("Must provide examples or set use_handcrafted=True")
-    else:
-        example_list = _curate_generated_examples(examples, max_examples_per_category)
-
-    # Build a sample prompt
-    sample_prompt = build_stage1_prompt_string(
-        "Sample comment for length estimation.",
-        condensed,
-        example_list,
-        rules,
-        use_handcrafted=False,  # Already have example_list
+    """Get statistics about the Stage 1 prompt."""
+    prompt = build_stage1_prompt_string(
+        comment="[SAMPLE COMMENT]",
+        condensed=condensed,
+        examples=examples,
+        use_handcrafted=use_handcrafted,
     )
 
-    # Estimate tokens (rough: ~4 chars per token)
-    estimated_tokens = len(sample_prompt) // 4
-
     return {
-        "total_chars": len(sample_prompt),
-        "estimated_tokens": estimated_tokens,
+        "total_length": len(prompt),
         "num_categories": len(condensed.categories),
-        "num_elements": sum(len(cat.elements) for cat in condensed.categories),
-        "num_examples": len(example_list),
-        "num_rules": len(rules),
-        "using_handcrafted": use_handcrafted,
+        "num_examples": len(HANDCRAFTED_STAGE1_EXAMPLES) if use_handcrafted else "varies",
+        "source": "handcrafted" if use_handcrafted else "generated (auto-curated)",
     }
 
 
 def print_stage1_prompt_preview(
     condensed: CondensedTaxonomy,
     examples: Optional[ExampleSet | List[ClassificationExample]] = None,
-    sample_comment: str = "The networking sessions were great but the WiFi was terrible.",
-    max_chars: int = 2000,
     use_handcrafted: bool = True,
-    max_examples_per_category: int = 1,
+    max_chars: int = 500,
 ) -> None:
-    """
-    Print a preview of the Stage 1 prompt.
-
-    Args:
-        condensed: CondensedTaxonomy
-        examples: ExampleSet or list (optional if use_handcrafted=True)
-        sample_comment: Comment to use in preview
-        max_chars: Maximum characters to display
-        use_handcrafted: If True, use handcrafted examples
-        max_examples_per_category: If using generated, max per category
-    """
-    if use_handcrafted:
-        example_list = HANDCRAFTED_STAGE1_EXAMPLES
-    elif examples is None:
-        raise ValueError("Must provide examples or set use_handcrafted=True")
-    else:
-        example_list = _curate_generated_examples(examples, max_examples_per_category)
-
+    """Print a preview of the Stage 1 prompt."""
     prompt = build_stage1_prompt_string(
-        sample_comment, condensed, example_list, use_handcrafted=False
-    )
-    stats = get_stage1_prompt_stats(
-        condensed,
-        examples,
+        comment="The conference was amazing!",
+        condensed=condensed,
+        examples=examples,
         use_handcrafted=use_handcrafted,
-        max_examples_per_category=max_examples_per_category,
     )
 
-    print("\n" + "=" * 70)
+    stats = get_stage1_prompt_stats(condensed, examples, use_handcrafted)
+
+    print("=" * 70)
     print("STAGE 1 PROMPT PREVIEW")
     print("=" * 70)
-    print(
-        f"Total length: {stats['total_chars']:,} chars (~{stats['estimated_tokens']:,} tokens)"
-    )
+    print(f"Source: {stats['source']}")
+    print(f"Length: {stats['total_length']:,} chars")
     print(f"Categories: {stats['num_categories']}")
-    print(f"Elements: {stats['num_elements']}")
-    print(
-        f"Examples: {stats['num_examples']} ({'handcrafted' if stats['using_handcrafted'] else 'generated (curated)'})"
-    )
-    print(f"Rules: {stats['num_rules']}")
+    print(f"Examples: {stats['num_examples']}")
+    print("\nFirst {max_chars} characters:")
     print("-" * 70)
-
-    if len(prompt) > max_chars:
-        print(prompt[:max_chars])
-        print(f"\n... (truncated, {len(prompt) - max_chars:,} more chars)")
-    else:
-        print(prompt)
+    print(prompt[:max_chars] + "...")

@@ -29,7 +29,7 @@ Usage:
         examples=examples,
         rules=rules,
         output_dir="prompts/",
-        use_handcrafted=True,  # Use handcrafted examples for Stage 1
+        use_handcrafted=True,  # Use handcrafted examples (recommended)
     )
 """
 
@@ -237,6 +237,8 @@ def export_stage2_prompts(
     rules: ClassificationRules,
     output_dir: str | Path,
     force_overwrite: bool = False,
+    use_handcrafted: bool = True,
+    max_examples: int = 6,
 ) -> List[Path]:
     """
     Export Stage 2 element extraction prompts (one per category).
@@ -247,15 +249,13 @@ def export_stage2_prompts(
         rules: ClassificationRules
         output_dir: Output directory (will create stage2/ subfolder)
         force_overwrite: If True, overwrite even if MANUALLY_EDITED
+        use_handcrafted: If True, use handcrafted examples (default: True)
+        max_examples: Max examples per category if using generated
 
     Returns:
         List of paths to exported files
     """
-    from ..prompts.stage2 import (
-        format_elements_section,
-        format_stage2_examples_section,
-        get_stage2_examples_for_category,
-    )
+    from .stage2 import export_stage2_prompt_module
 
     output_dir = Path(output_dir)
     stage2_dir = output_dir / "stage2"
@@ -274,84 +274,18 @@ def export_stage2_prompts(
             exported_files.append(filepath)
             continue
 
-        # Build prompt components
-        elements_section = format_elements_section(category)
+        # Export using stage2 module
+        category_rules = rules.get_all_stage2_rules(category.name)
 
-        category_examples = get_stage2_examples_for_category(examples, category.name)
-        examples_section = format_stage2_examples_section(category_examples, category.name)
-
-        # Build rules section
-        all_rules = rules.get_all_stage2_rules(category.name)
-        rules_section = "\n".join(f"{i}. {r}" for i, r in enumerate(all_rules, 1))
-
-        # Generate header
-        header = generate_header(
-            title=f"Stage 2: {category.name}",
-            description=f"Extracts feedback elements related to {category.name}.",
-            source_files=["condensed_taxonomy.json", "examples.json", "rules.json"],
-            additional_notes=[
-                f"Category: {category.name}",
-                f"Elements: {', '.join(e.name for e in category.elements)}",
-            ],
+        export_stage2_prompt_module(
+            category=category.name,
+            filepath=filepath,
+            condensed=condensed,
+            examples=examples,
+            rules=category_rules,
+            use_handcrafted=use_handcrafted,
+            max_examples=max_examples,
         )
-
-        # Build function name
-        func_name = f"stage2_{sanitize_name(category.name)}_prompt"
-
-        # Build module content
-        module_content = f'''{header}
-
-CATEGORY_NAME = "{category.name}"
-
-ELEMENTS = [
-    {", ".join(f'"{e.name}"' for e in category.elements)}
-]
-
-
-def {func_name}(comment: str) -> str:
-    """
-    Generate Stage 2 element extraction prompt for {category.name}.
-
-    Args:
-        comment: The conference feedback comment to analyze
-
-    Returns:
-        Formatted prompt string ready for LLM processing
-    """
-    return f"""You are an expert conference feedback analyzer. Extract specific feedback related to {category.name} from this comment.
-
-COMMENT TO ANALYZE:
-{{comment}}
-
----
-
-ELEMENTS TO IDENTIFY:
-
-{elements_section}
-
----
-
-CLASSIFICATION RULES:
-
-{rules_section}
-
----
-
-EXAMPLES:
-
-{examples_section}
-
----
-
-Extract all relevant excerpts and return ONLY valid JSON. If no content relates to {category.name}, return {{"classifications": []}}."""
-
-
-# Convenience alias
-PROMPT = {func_name}
-'''
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(module_content)
 
         exported_files.append(filepath)
 
@@ -486,6 +420,7 @@ def export_prompts_hierarchical(
     output_dir: str | Path,
     force_overwrite: bool = False,
     use_handcrafted: bool = True,
+    max_examples_stage2: int = 6,
     verbose: bool = True,
 ) -> dict:
     """
@@ -508,7 +443,8 @@ def export_prompts_hierarchical(
         rules: ClassificationRules
         output_dir: Root output directory
         force_overwrite: If True, overwrite files even if MANUALLY_EDITED
-        use_handcrafted: If True, use handcrafted examples for Stage 1 (default: True)
+        use_handcrafted: If True, use handcrafted examples (default: True)
+        max_examples_stage2: Max examples per Stage 2 category if using generated
         verbose: Print progress
 
     Returns:
@@ -526,9 +462,11 @@ def export_prompts_hierarchical(
         print("=" * 70)
         print(f"Output: {output_dir}")
         if use_handcrafted:
-            print("Stage 1: Using handcrafted examples")
+            print("Mode: Using handcrafted examples (recommended)")
         else:
-            print("Stage 1: Using generated examples (auto-curated)")
+            print(
+                f"Mode: Using generated examples (auto-curated, max {max_examples_stage2} per category)"
+            )
 
     # Export Stage 1
     if verbose:
@@ -543,7 +481,13 @@ def export_prompts_hierarchical(
     if verbose:
         print(f"\nStage 2 ({len(condensed.categories)} categories):")
     stage2_files = export_stage2_prompts(
-        condensed, examples, rules, output_dir, force_overwrite
+        condensed,
+        examples,
+        rules,
+        output_dir,
+        force_overwrite,
+        use_handcrafted,
+        max_examples_stage2,
     )
     for f in stage2_files:
         if verbose:
@@ -558,12 +502,16 @@ def export_prompts_hierarchical(
     _generate_main_init(output_dir)
 
     if verbose:
-        print(f"\n✓ Exported {1 + len(stage2_files)} prompt files to {output_dir}")
+        mode = "handcrafted" if use_handcrafted else "generated"
+        print(
+            f"\n✓ Exported {1 + len(stage2_files)} prompt files ({mode} mode) to {output_dir}"
+        )
 
     return {
         "stage1_file": stage1_file,
         "stage2_files": stage2_files,
         "total_files": 1 + len(stage2_files),
+        "mode": "handcrafted" if use_handcrafted else "generated",
     }
 
 
@@ -854,6 +802,7 @@ def export_prompts_hierarchical_with_stage3(
     output_dir: str | Path,
     force_overwrite: bool = False,
     use_handcrafted: bool = True,
+    max_examples_stage2: int = 6,
     verbose: bool = True,
 ) -> dict:
     """
@@ -881,7 +830,8 @@ def export_prompts_hierarchical_with_stage3(
         taxonomy: Raw taxonomy dict (for attribute info)
         output_dir: Root output directory
         force_overwrite: If True, overwrite files even if MANUALLY_EDITED
-        use_handcrafted: If True, use handcrafted examples for Stage 1 (default: True)
+        use_handcrafted: If True, use handcrafted examples for Stages 1 & 2 (default: True)
+        max_examples_stage2: Max examples per Stage 2 category if using generated
         verbose: Print progress
 
     Returns:
@@ -896,9 +846,12 @@ def export_prompts_hierarchical_with_stage3(
         print("=" * 70)
         print(f"Output: {output_dir}")
         if use_handcrafted:
-            print("Stage 1: Using handcrafted examples")
+            print("Stages 1 & 2: Using handcrafted examples (recommended)")
         else:
-            print("Stage 1: Using generated examples (auto-curated)")
+            print(
+                f"Stages 1 & 2: Using generated examples (auto-curated, max {max_examples_stage2} per category)"
+            )
+        print("Stage 3: Generated examples (attribute-level)")
 
     # Export Stage 1
     if verbose:
@@ -913,7 +866,13 @@ def export_prompts_hierarchical_with_stage3(
     if verbose:
         print(f"\nStage 2 ({len(condensed.categories)} categories):")
     stage2_files = export_stage2_prompts(
-        condensed, examples, rules, output_dir, force_overwrite
+        condensed,
+        examples,
+        rules,
+        output_dir,
+        force_overwrite,
+        use_handcrafted,
+        max_examples_stage2,
     )
     for f in stage2_files:
         if verbose:
@@ -941,14 +900,18 @@ def export_prompts_hierarchical_with_stage3(
     _generate_main_init_with_stage3(output_dir)
 
     total_files = 1 + len(stage2_files) + len(stage3_files)
+    mode = "handcrafted" if use_handcrafted else "generated"
     if verbose:
-        print(f"\n✓ Exported {total_files} prompt files to {output_dir}")
+        print(
+            f"\n✓ Exported {total_files} prompt files (Stages 1&2: {mode}, Stage 3: generated) to {output_dir}"
+        )
 
     return {
         "stage1_file": stage1_file,
         "stage2_files": stage2_files,
         "stage3_files": stage3_files,
         "total_files": total_files,
+        "mode": mode,
     }
 
 

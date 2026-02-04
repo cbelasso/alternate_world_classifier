@@ -1,99 +1,88 @@
-# Byte-compiled / optimized / DLL files
+# -----------------------
+# Python
+# -----------------------
 __pycache__/
 *.py[cod]
-*__pycache__/
+
 # C extensions
 *.so
 
+# -----------------------
+# Virtual environments
+# -----------------------
+.env
 .envrc
 .python-version
-
-*.json
-*.csv
-*.xlsx
-*.pkl
-
-# Distribution / packaging
-.Python
 env/
+venv/
+.venv/
+
+# -----------------------
+# Packaging / build
+# -----------------------
+.Python
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib64/
-parts/
-sdist/
-var/
 *.egg-info/
-.installed.cfg
+.eggs/
 *.egg
+.installed.cfg
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
+# -----------------------
+# Test / coverage
+# -----------------------
 htmlcov/
 .tox/
 .coverage
 .coverage.*
 .cache
-nosetests.xml
 coverage.xml
 *.cover
+nosetests.xml
 
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
+# -----------------------
+# Logs
+# -----------------------
 *.log
 
-# Sphinx documentation
+# -----------------------
+# Docs
+# -----------------------
 docs/_build/
 
-# PyBuilder
-target/
-
-# DotEnv configuration
-.env
-
-# Database
-*.db
-*.rdb
-
-# Pycharm
-.idea
-
-# VS Code
+# -----------------------
+# IDEs
+# -----------------------
+.idea/
 .vscode/
-
-# Spyder
 .spyproject/
-
-# Jupyter NB Checkpoints
 .ipynb_checkpoints/
 
-# Mac OS-specific storage files
+# -----------------------
+# OS / editor junk
+# -----------------------
 .DS_Store
-
-# vim
 *.swp
 *.swo
 
-# Mypy cache
+# -----------------------
+# Type checking
+# -----------------------
 .mypy_cache/
 
-# venv
-venv/
+# -----------------------
+# Databases
+# -----------------------
+*.db
+*.rdb
 
-# DirEnv
-.envrc
+# -----------------------
+# Large / generated data (selective!)
+# -----------------------
+data/
+artifacts/
+checkpoints/
+
+# Allow configs explicitly
+!**/config*.json
+!**/schema*.json

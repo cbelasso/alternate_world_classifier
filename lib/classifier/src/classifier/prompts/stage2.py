@@ -3,9 +3,6 @@ Stage 2 Prompt Builder
 
 Assembles Stage 2 (element extraction) prompts from condensed taxonomy and examples.
 
-Stage 2 prompts are CATEGORY-SPECIFIC - each category gets its own prompt function
-that extracts elements relevant to that category.
-
 This is pure Python templating - NO LLM required!
 
 Usage:
@@ -17,15 +14,14 @@ Usage:
     condensed = load_condensed("artifacts/condensed.json")
     examples = load_examples("artifacts/examples.json")
 
-    # Build prompt functions (one per category)
-    stage2_prompts = build_stage2_prompt_functions(condensed, examples)
+    # Build prompt functions (pure Python) - with handcrafted examples
+    stage2_prompts = build_stage2_prompt_functions(condensed, use_handcrafted=True)
+
+    # Or with generated examples (automatically curated)
+    stage2_prompts = build_stage2_prompt_functions(condensed, examples, use_handcrafted=False)
 
     # Use at runtime
-    people_prompt = stage2_prompts["People"]
-    prompt = people_prompt("The speaker was brilliant!")
-
-    # Or export as standalone Python module
-    export_stage2_prompt_module(condensed, examples, "prompts/stage2_prompts.py")
+    prompt = stage2_prompts["People"]("The staff was helpful!")
 """
 
 from pathlib import Path
@@ -33,44 +29,190 @@ from typing import Callable, Dict, List, Optional
 
 from ..taxonomy.condenser import CondensedCategory, CondensedTaxonomy
 from ..taxonomy.example_generator import ClassificationExample, ExampleSet
+from .base import format_stage2_example
 
 # =============================================================================
-# Default Classification Rules (Category-Specific)
+# Handcrafted Stage 2 Content (Extracted from Proven Standalone Script)
 # =============================================================================
 
-DEFAULT_STAGE2_RULES = [
-    "Extract the EXACT excerpt from the comment that relates to each element.",
-    "Each excerpt should be classified to ONE element only.",
-    "Sentiment: positive (praise), negative (criticism), neutral (observation), mixed (both positive and negative).",
-    "If multiple distinct excerpts relate to the same element, create separate entries.",
-    "Only extract elements that are clearly present - do not infer or assume.",
-]
-
-# Category-specific disambiguation rules
-CATEGORY_SPECIFIC_RULES: Dict[str, List[str]] = {
-    "Attendee Engagement & Interaction": [
-        '"Community" = feeling of belonging; "Networking" = act of meeting/connecting.',
-        '"Knowledge Exchange" = peer-to-peer learning; different from formal presentations.',
-    ],
-    "Event Logistics & Infrastructure": [
-        '"Conference Application/Software" = apps for attendees; "Technological Tools" = A/V equipment for sessions.',
-        '"Conference Venue" = physical space; "Hotel" = accommodation.',
-    ],
-    "Event Operations & Management": [
-        'General praise like "great conference" or "well organized" → Conference element.',
-        "Comments about session timing or agenda structure → Conference Scheduling.",
-    ],
-    "Learning & Content Delivery": [
-        '"Presentations" = quality of talks; "Topics" = what subjects were covered.',
-        '"Session/Workshop" = format of learning; "Gained Knowledge" = what was learned.',
-        'Requests for "more workshops" or "hands-on sessions" → Session/Workshop.',
-    ],
-    "People": [
-        '"Explorance team" as hosts/organizers → Conference Staff.',
-        '"Explorance experts" for knowledge/consulting → Experts/Consultants.',
-        '"Blue users" or "community members" → Participants/Attendees.',
-        'Named speakers or "the presenter" → Speakers/Presenters.',
-    ],
+HANDCRAFTED_STAGE2_SECTIONS = {
+    "Attendee Engagement & Interaction": {
+        "elements": """**Community**: Sense of belonging, community spirit, feeling welcomed, being part of a group, supportive environment
+**Knowledge Exchange**: Sharing experiences with peers, learning from others' implementations, collaborative problem-solving, best practice sharing
+**Networking**: Meeting new people, professional connections, peer discussions, contact exchange, relationship building
+**Social Events**: Gala dinners, receptions, evening events, informal gatherings, social activities outside sessions""",
+        "rules": [
+            "Extract the EXACT excerpt from the comment that relates to each element.",
+            "Each excerpt should be classified to ONE element only.",
+            "Sentiment: positive (praise), negative (criticism), neutral (observation), mixed (both positive and negative).",
+            '"Community" = feeling of belonging; "Networking" = act of meeting/connecting.',
+            '"Knowledge Exchange" = peer-to-peer learning; different from formal presentations.',
+        ],
+        "examples": [
+            {
+                "comment": "The community is so supportive and open to sharing their knowledge.",
+                "output": '{{"classifications": [{{"excerpt": "The community is so supportive", "reasoning": "Expresses feeling of supportive community environment", "element": "Community", "sentiment": "positive"}}, {{"excerpt": "open to sharing their knowledge", "reasoning": "References peer knowledge sharing", "element": "Knowledge Exchange", "sentiment": "positive"}}]}}',
+            },
+            {
+                "comment": "Change the networking session. Nobody from Explorance showed up at my table. Sitting there with 1 other person was awkward.",
+                "output": '{{"classifications": [{{"excerpt": "Change the networking session. Nobody from Explorance showed up at my table. Sitting there with 1 other person was awkward", "reasoning": "Negative experience with networking session format", "element": "Networking", "sentiment": "negative"}}]}}',
+            },
+            {
+                "comment": "I would have liked to go to the Marina for the gala dinner but I understand that would have been challenging.",
+                "output": '{{"classifications": [{{"excerpt": "I would have liked to go to the Marina for the gala dinner", "reasoning": "Suggestion about gala dinner venue", "element": "Social Events", "sentiment": "mixed"}}]}}',
+            },
+            {
+                "comment": "It only took an hour to go from brand new user to genuinely feeling like a part of the Blue community.",
+                "output": '{{"classifications": [{{"excerpt": "genuinely feeling like a part of the Blue community", "reasoning": "Expresses sense of belonging to community", "element": "Community", "sentiment": "positive"}}]}}',
+            },
+        ],
+    },
+    "Event Logistics & Infrastructure": {
+        "elements": """**Conference Application/Software**: Mobile apps, event platforms, Bluepulse app, digital tools for attendees, software for participation
+**Conference Venue**: Location, rooms, facilities, seating, temperature, accessibility, physical space
+**Food/Beverages**: Meals, snacks, drinks, catering quality, dietary options, refreshments
+**Hotel**: Accommodation, lodging, hotel arrangements, room quality
+**Technological Tools**: A/V equipment, microphones, projectors, screens, tech setup for presentations
+**Transportation**: Getting to/from venue, shuttles, parking, travel arrangements, logistics of movement
+**Wi-Fi**: Internet connectivity, network access, connection quality""",
+        "rules": [
+            "Extract the EXACT excerpt from the comment that relates to each element.",
+            "Each excerpt should be classified to ONE element only.",
+            "Sentiment: positive (praise), negative (criticism), neutral (observation), mixed (both positive and negative).",
+            '"Conference Application/Software" = apps for attendees; "Technological Tools" = A/V equipment for sessions.',
+        ],
+        "examples": [
+            {
+                "comment": "Having the Bluepulse app information earlier. Those without a Smart phone were not able to evaluate the sessions.",
+                "output": '{{"classifications": [{{"excerpt": "Having the Bluepulse app information earlier. Those without a Smart phone were not able to evaluate the sessions", "reasoning": "Feedback about conference app accessibility and communication", "element": "Conference Application/Software", "sentiment": "negative"}}]}}',
+            },
+            {
+                "comment": "Wish there was hand sanitizer more available around the conference.",
+                "output": '{{"classifications": [{{"excerpt": "Wish there was hand sanitizer more available around the conference", "reasoning": "Request for venue amenity", "element": "Conference Venue", "sentiment": "negative"}}]}}',
+            },
+            {
+                "comment": "have drinks available, even if a cash bar, at events.",
+                "output": '{{"classifications": [{{"excerpt": "have drinks available, even if a cash bar, at events", "reasoning": "Request for beverage availability", "element": "Food/Beverages", "sentiment": "negative"}}]}}',
+            },
+            {
+                "comment": "The WiFi kept dropping and made it hard to follow along.",
+                "output": '{{"classifications": [{{"excerpt": "The WiFi kept dropping and made it hard to follow along", "reasoning": "Complaint about internet connectivity", "element": "Wi-Fi", "sentiment": "negative"}}]}}',
+            },
+        ],
+    },
+    "Event Operations & Management": {
+        "elements": """**Conference**: General event organization, overall management, event quality, hospitality, general conference experience
+**Conference Registration**: Sign-up process, check-in, badge pickup, registration system, enrollment
+**Conference Scheduling**: Session timing, agenda, time management, scheduling conflicts, program structure
+**Messaging & Awareness**: Communication, announcements, information clarity, signage, pre-event information""",
+        "rules": [
+            "Extract the EXACT excerpt from the comment that relates to each element.",
+            "Each excerpt should be classified to ONE element only.",
+            "Sentiment: positive (praise), negative (criticism), neutral (observation), mixed (both positive and negative).",
+            'General praise like "great conference" or "well organized" → Conference element.',
+            "Comments about session timing or agenda structure → Conference Scheduling.",
+        ],
+        "examples": [
+            {
+                "comment": "An excellent, informative, and well-organised event.",
+                "output": '{{"classifications": [{{"excerpt": "An excellent, informative, and well-organised event", "reasoning": "General positive feedback about event organization", "element": "Conference", "sentiment": "positive"}}]}}',
+            },
+            {
+                "comment": "The registration process was rather slow, I did sign up quite close to the date but I never even got an invoice.",
+                "output": '{{"classifications": [{{"excerpt": "The registration process was rather slow, I did sign up quite close to the date but I never even got an invoice", "reasoning": "Complaint about registration process and invoicing", "element": "Conference Registration", "sentiment": "negative"}}]}}',
+            },
+            {
+                "comment": "More repeated sessions which, while not bad, the time could have been spent doing more hands-on activities.",
+                "output": '{{"classifications": [{{"excerpt": "More repeated sessions which, while not bad, the time could have been spent doing more hands-on activities", "reasoning": "Feedback about session scheduling and program structure", "element": "Conference Scheduling", "sentiment": "mixed"}}]}}',
+            },
+            {
+                "comment": "BNG 2022 has set the bar high in terms of hospitality. They go beyond their call for duty.",
+                "output": '{{"classifications": [{{"excerpt": "BNG 2022 has set the bar high in terms of hospitality. They go beyond their call for duty", "reasoning": "Praise for conference hospitality and management", "element": "Conference", "sentiment": "positive"}}]}}',
+            },
+        ],
+    },
+    "Learning & Content Delivery": {
+        "elements": """**Demonstration**: Live demos, product showcases, hands-on examples, showing how things work
+**Gained Knowledge**: What attendees learned, takeaways, actionable insights, things to implement
+**Open Discussion**: Q&A sessions, audience participation, interactive discussions, roundtables
+**Panel Discussions**: Panel format sessions, multi-speaker discussions, panel quality
+**Presentations**: Individual talks, keynotes, speaker presentations, talk quality and content
+**Resources/Materials**: Handouts, slides, documentation, learning materials, presentation copies
+**Session/Workshop**: Breakout sessions, workshops, training sessions, hands-on learning
+**Topics**: Subject matter, themes, content relevance, topic selection, what was covered""",
+        "rules": [
+            "Extract the EXACT excerpt from the comment that relates to each element.",
+            "Each excerpt should be classified to ONE element only.",
+            "Sentiment: positive (praise), negative (criticism), neutral (observation), mixed (both positive and negative).",
+            '"Presentations" = quality of talks; "Topics" = what subjects were covered.',
+            '"Session/Workshop" = format of learning; "Gained Knowledge" = what was learned.',
+            'Requests for "more workshops" or "hands-on sessions" → Session/Workshop.',
+        ],
+        "examples": [
+            {
+                "comment": "The presentations were better than the panel discussion. Better panelists would be preferred.",
+                "output": '{{"classifications": [{{"excerpt": "The presentations were better than the panel discussion", "reasoning": "Comparison of presentation vs panel format quality", "element": "Presentations", "sentiment": "positive"}}, {{"excerpt": "Better panelists would be preferred", "reasoning": "Criticism of panel discussion quality", "element": "Panel Discussions", "sentiment": "negative"}}]}}',
+            },
+            {
+                "comment": "Provide presentation materials hard or soft copies.",
+                "output": '{{"classifications": [{{"excerpt": "Provide presentation materials hard or soft copies", "reasoning": "Request for presentation materials/handouts", "element": "Resources/Materials", "sentiment": "negative"}}]}}',
+            },
+            {
+                "comment": "More technical workshops would be great. The presentations were good.",
+                "output": '{{"classifications": [{{"excerpt": "More technical workshops would be great", "reasoning": "Request for more workshop sessions", "element": "Session/Workshop", "sentiment": "mixed"}}, {{"excerpt": "The presentations were good", "reasoning": "Positive feedback on presentations", "element": "Presentations", "sentiment": "positive"}}]}}',
+            },
+            {
+                "comment": "I came away with a significant 'to do' list which will help us leverage insights collected from our students.",
+                "output": '{{"classifications": [{{"excerpt": "I came away with a significant \'to do\' list which will help us leverage insights collected from our students", "reasoning": "Actionable takeaways gained from conference", "element": "Gained Knowledge", "sentiment": "positive"}}]}}',
+            },
+            {
+                "comment": "I wonder if some round table discussions would help.",
+                "output": '{{"classifications": [{{"excerpt": "I wonder if some round table discussions would help", "reasoning": "Suggestion for open discussion format", "element": "Open Discussion", "sentiment": "mixed"}}]}}',
+            },
+            {
+                "comment": "high quality papers and mix of topics from increasing response rates through to machine learning applied to text analytics",
+                "output": '{{"classifications": [{{"excerpt": "high quality papers and mix of topics from increasing response rates through to machine learning applied to text analytics", "reasoning": "Praise for topic variety and quality", "element": "Topics", "sentiment": "positive"}}]}}',
+            },
+        ],
+    },
+    "People": {
+        "elements": """**Conference Staff**: Organizers, volunteers, support staff, event team, Explorance team (when mentioned as organizers/hosts)
+**Experts/Consultants**: Industry experts, product specialists, consultants, Explorance experts (when mentioned for their expertise)
+**Participants/Attendees**: Fellow attendees, other conference-goers, peers at the conference
+**Speakers/Presenters**: Keynote speakers, session presenters, panelists, people giving talks
+**Unspecified Person**: References to people without clear role identification""",
+        "rules": [
+            "Extract the EXACT excerpt from the comment that relates to each element.",
+            "Each excerpt should be classified to ONE element only.",
+            "Sentiment: positive (praise), negative (criticism), neutral (observation), mixed (both positive and negative).",
+            '"Explorance team" as hosts/organizers → Conference Staff.',
+            '"Explorance experts" for knowledge/consulting → Experts/Consultants.',
+            '"Blue users" or "community members" → Participants/Attendees.',
+            'Named speakers or "the presenter" → Speakers/Presenters.',
+        ],
+        "examples": [
+            {
+                "comment": "The Explorance staff are so genuine, knowledgeable, and accessible.",
+                "output": '{{"classifications": [{{"excerpt": "The Explorance staff are so genuine, knowledgeable, and accessible", "reasoning": "Praise for conference staff qualities", "element": "Conference Staff", "sentiment": "positive"}}]}}',
+            },
+            {
+                "comment": "The ability to talk not only to Explorance Experts but to network with community members made this valuable.",
+                "output": '{{"classifications": [{{"excerpt": "talk not only to Explorance Experts", "reasoning": "Reference to product experts", "element": "Experts/Consultants", "sentiment": "positive"}}, {{"excerpt": "network with community members", "reasoning": "Reference to fellow attendees", "element": "Participants/Attendees", "sentiment": "positive"}}]}}',
+            },
+            {
+                "comment": "The Blue users you'll meet are smart, creative, and always willing to share and collaborate.",
+                "output": '{{"classifications": [{{"excerpt": "The Blue users you\'ll meet are smart, creative, and always willing to share and collaborate", "reasoning": "Praise for fellow attendees", "element": "Participants/Attendees", "sentiment": "positive"}}]}}',
+            },
+            {
+                "comment": "some speakers appeared to have changed or modified the presentation from the original abstract",
+                "output": '{{"classifications": [{{"excerpt": "some speakers appeared to have changed or modified the presentation from the original abstract", "reasoning": "Criticism of speakers deviating from abstract", "element": "Speakers/Presenters", "sentiment": "negative"}}]}}',
+            },
+            {
+                "comment": "Nobody from Explorance showed up at my table.",
+                "output": '{{"classifications": [{{"excerpt": "Nobody from Explorance showed up at my table", "reasoning": "Complaint about staff absence at networking", "element": "Conference Staff", "sentiment": "negative"}}]}}',
+            },
+        ],
+    },
 }
 
 
@@ -78,98 +220,56 @@ CATEGORY_SPECIFIC_RULES: Dict[str, List[str]] = {
 # Prompt Template
 # =============================================================================
 
-STAGE2_TEMPLATE = """You are an expert conference feedback analyzer. Extract specific feedback related to {category_name} from this comment.
+STAGE2_TEMPLATE = """You are an expert conference feedback analyzer. Extract specific feedback related to {category} from this comment.
 
 COMMENT TO ANALYZE:
-{comment}
+{{comment}}
 
 ---
 
 ELEMENTS TO IDENTIFY:
 
-{elements_section}
+{elements}
 
 ---
 
 CLASSIFICATION RULES:
 
-{rules_section}
+{rules}
 
 ---
 
 EXAMPLES:
 
-{examples_section}
+{examples}
 
 ---
 
-Extract all relevant excerpts and return ONLY valid JSON. If no content relates to {category_name}, return {{"classifications": []}}."""
+Extract all relevant excerpts and return ONLY valid JSON. If no content relates to {category}, return {{"classifications": []}}."""
 
 
 # =============================================================================
-# Formatting Helpers
+# Example Curation Helper
 # =============================================================================
 
 
-def format_elements_section(category: CondensedCategory) -> str:
-    """
-    Format elements for a specific category.
-
-    Output format:
-        **Element Name**: Element description
-
-    Args:
-        category: CondensedCategory instance
-
-    Returns:
-        Formatted string
-    """
-    lines = []
-    for element in category.elements:
-        lines.append(f"**{element.name}**: {element.short_description}")
-    return "\n".join(lines)
-
-
-def format_stage2_rules(
-    category_name: str,
-    base_rules: Optional[List[str]] = None,
-) -> str:
-    """
-    Format rules for Stage 2, including category-specific rules.
-
-    Args:
-        category_name: Name of the category
-        base_rules: Base rules (uses DEFAULT_STAGE2_RULES if not provided)
-
-    Returns:
-        Formatted numbered rules
-    """
-    rules = list(base_rules or DEFAULT_STAGE2_RULES)
-
-    # Add category-specific rules
-    specific_rules = CATEGORY_SPECIFIC_RULES.get(category_name, [])
-    rules.extend(specific_rules)
-
-    return "\n".join(f"{i}. {rule}" for i, rule in enumerate(rules, 1))
-
-
-def get_stage2_examples_for_category(
+def _get_stage2_examples_for_category(
     examples: ExampleSet | List[ClassificationExample],
     category_name: str,
 ) -> List[ClassificationExample]:
     """
-    Filter examples to only those relevant to a specific category.
+    Get examples relevant to a specific category.
 
-    An example is relevant if:
-    - It has element_details for this category, OR
-    - Its source_category matches this category
+    Filters to examples where:
+    1. The category appears in categories_present, OR
+    2. Element details contain elements from this category
 
     Args:
-        examples: ExampleSet or list of ClassificationExample
-        category_name: Category to filter for
+        examples: ExampleSet or list of examples
+        category_name: Name of the category
 
     Returns:
-        List of relevant examples
+        Filtered list of examples
     """
     if isinstance(examples, ExampleSet):
         example_list = examples.examples
@@ -178,92 +278,116 @@ def get_stage2_examples_for_category(
 
     relevant = []
     for ex in example_list:
-        # Check if any element_details match this category
-        has_relevant_details = any(
-            detail.category == category_name for detail in ex.element_details
-        )
-
-        # Check if source_category matches (for simple examples)
-        is_source_category = ex.source_category == category_name
-
         # Check if category is in categories_present
-        in_categories = category_name in ex.categories_present
-
-        if has_relevant_details or (is_source_category and in_categories):
+        if category_name in ex.categories_present:
             relevant.append(ex)
+            continue
+
+        # Check if any element_details match this category
+        for detail in ex.element_details:
+            if detail.category == category_name or ex.source_category == category_name:
+                relevant.append(ex)
+                break
 
     return relevant
 
 
-def format_stage2_example(example: ClassificationExample, category_name: str) -> str:
-    """
-    Format a single example for Stage 2 prompt.
-
-    Only includes element_details that match the category.
-
-    Args:
-        example: ClassificationExample instance
-        category_name: Category to filter for
-
-    Returns:
-        Formatted example string
-    """
-    import json
-
-    # Filter element_details to only this category
-    relevant_details = [
-        detail
-        for detail in example.element_details
-        if detail.category == category_name or example.source_category == category_name
-    ]
-
-    if not relevant_details:
-        return None
-
-    # Format classifications array
-    classifications = []
-    for detail in relevant_details:
-        classifications.append(
-            {
-                "excerpt": detail.excerpt,
-                "reasoning": detail.reasoning,
-                "element": detail.element,
-                "sentiment": detail.sentiment,
-            }
-        )
-
-    output = {"classifications": classifications}
-    output_str = json.dumps(output, indent=2)
-
-    return f'Comment: "{example.comment}"\n{output_str}'
-
-
-def format_stage2_examples_section(
+def _curate_stage2_examples(
     examples: List[ClassificationExample],
     category_name: str,
-) -> str:
+    max_examples: int = 6,
+) -> List[ClassificationExample]:
     """
-    Format all examples for a Stage 2 category prompt.
+    Curate Stage 2 examples to avoid bloat.
+
+    Strategy:
+    - Prioritize examples with multiple elements (show diversity)
+    - Limit to max_examples total
+    - Ensure variety of sentiments
 
     Args:
-        examples: List of ClassificationExample
-        category_name: Category to filter for
+        examples: List of examples for this category
+        category_name: Category name
+        max_examples: Maximum examples to include
 
     Returns:
-        Formatted examples section
+        Curated list
     """
+    # Sort by number of element_details (prefer multi-element examples)
+    sorted_examples = sorted(
+        examples,
+        key=lambda ex: len(
+            [
+                d
+                for d in ex.element_details
+                if d.category == category_name or ex.source_category == category_name
+            ]
+        ),
+        reverse=True,
+    )
+
+    return sorted_examples[:max_examples]
+
+
+# =============================================================================
+# Formatting Helpers
+# =============================================================================
+
+
+def _format_stage2_examples_handcrafted(category: str) -> str:
+    """Format handcrafted examples for a category."""
+    examples = HANDCRAFTED_STAGE2_SECTIONS[category]["examples"]
+
     formatted = []
     for ex in examples:
-        formatted_ex = format_stage2_example(ex, category_name)
-        if formatted_ex:
-            formatted.append(formatted_ex)
-
-    if not formatted:
-        # Provide a generic example structure
-        return f"""Comment: "Example feedback about {category_name}."
-{{"classifications": [{{"excerpt": "Example feedback", "reasoning": "Relates to element", "element": "ElementName", "sentiment": "positive"}}]}}"""
+        formatted.append(f'Comment: "{ex["comment"]}"\n{ex["output"]}')
 
     return "\n\n".join(formatted)
+
+
+def _format_stage2_examples_generated(
+    examples: List[ClassificationExample],
+    category: str,
+) -> str:
+    """Format generated examples for a category."""
+    if not examples:
+        return "(No examples available)"
+
+    formatted = []
+    for ex in examples:
+        # Filter element_details to this category
+        relevant_details = [
+            d
+            for d in ex.element_details
+            if d.category == category or ex.source_category == category
+        ]
+
+        if not relevant_details:
+            continue
+
+        # Build classifications array
+        classifications = []
+        for detail in relevant_details:
+            classifications.append(
+                {
+                    "excerpt": detail.excerpt,
+                    "reasoning": detail.reasoning,
+                    "element": detail.element,
+                    "sentiment": detail.sentiment,
+                }
+            )
+
+        import json
+
+        output_json = json.dumps({"classifications": classifications})
+        formatted.append(f'Comment: "{ex.comment}"\n{output_json}')
+
+    return "\n\n".join(formatted) if formatted else "(No examples available)"
+
+
+def _format_rules(rules: List[str]) -> str:
+    """Format rules as numbered list."""
+    return "\n".join(f"{i}. {rule}" for i, rule in enumerate(rules, 1))
 
 
 # =============================================================================
@@ -273,213 +397,286 @@ def format_stage2_examples_section(
 
 def build_stage2_prompt_string(
     comment: str,
-    category: CondensedCategory,
-    examples: List[ClassificationExample],
-    rules: Optional[List[str]] = None,
+    category: str,
+    condensed: Optional[CondensedTaxonomy] = None,
+    examples: Optional[List[ClassificationExample]] = None,
+    use_handcrafted: bool = True,
 ) -> str:
     """
     Build a complete Stage 2 prompt for a specific comment and category.
 
     Args:
-        comment: The conference feedback comment to analyze
-        category: CondensedCategory with element descriptions
-        examples: List of ClassificationExample for few-shot learning
-        rules: Optional custom base rules
+        comment: The conference feedback comment
+        category: Category name
+        condensed: CondensedTaxonomy (optional, for generated content)
+        examples: List of examples (optional, for generated content)
+        use_handcrafted: If True, use handcrafted sections (default)
 
     Returns:
-        Complete prompt string ready for LLM
-
-    Example:
-        >>> prompt = build_stage2_prompt_string(
-        ...     "The speaker was great!",
-        ...     condensed.get_category("People"),
-        ...     category_examples,
-        ... )
+        Complete prompt string
     """
-    elements_section = format_elements_section(category)
-    rules_section = format_stage2_rules(category.name, rules)
-    examples_section = format_stage2_examples_section(examples, category.name)
+    if use_handcrafted:
+        if category not in HANDCRAFTED_STAGE2_SECTIONS:
+            raise ValueError(f"No handcrafted content for category: {category}")
 
-    return STAGE2_TEMPLATE.format(
-        category_name=category.name,
-        comment=comment,
-        elements_section=elements_section,
-        rules_section=rules_section,
-        examples_section=examples_section,
+        sections = HANDCRAFTED_STAGE2_SECTIONS[category]
+        elements_text = sections["elements"]
+        rules_text = _format_rules(sections["rules"])
+        examples_text = _format_stage2_examples_handcrafted(category)
+    else:
+        # Use generated content
+        if not condensed or not examples:
+            raise ValueError("Must provide condensed and examples when use_handcrafted=False")
+
+        # Get category from condensed
+        cat_obj = condensed.get_category(category)
+        if not cat_obj:
+            raise ValueError(f"Category not found: {category}")
+
+        # Format elements
+        elements_text = "\n".join(
+            f"**{elem.name}**: {elem.short_description}" for elem in cat_obj.elements
+        )
+
+        # Use default rules (could be loaded from rules.json)
+        rules_text = _format_rules(
+            [
+                "Extract the EXACT excerpt from the comment that relates to each element.",
+                "Each excerpt should be classified to ONE element only.",
+                "Sentiment: positive (praise), negative (criticism), neutral (observation), mixed (both positive and negative).",
+            ]
+        )
+
+        # Format examples
+        examples_text = _format_stage2_examples_generated(examples, category)
+
+    # Build full prompt
+    template = STAGE2_TEMPLATE.format(
+        category=category,
+        elements=elements_text,
+        rules=rules_text,
+        examples=examples_text,
     )
 
-
-def build_stage2_prompt_function(
-    category: CondensedCategory,
-    examples: ExampleSet | List[ClassificationExample],
-    rules: Optional[List[str]] = None,
-) -> Callable[[str], str]:
-    """
-    Build a reusable Stage 2 prompt function for a single category.
-
-    This creates a closure that "bakes in" the category's elements and examples,
-    returning a simple function that takes a comment and returns a prompt.
-
-    Args:
-        category: CondensedCategory with element descriptions
-        examples: ExampleSet or list of ClassificationExample
-        rules: Optional custom base rules
-
-    Returns:
-        Function that takes a comment string and returns a complete prompt
-    """
-    # Filter examples for this category
-    category_examples = get_stage2_examples_for_category(examples, category.name)
-
-    # Pre-compute static parts
-    elements_section = format_elements_section(category)
-    rules_section = format_stage2_rules(category.name, rules)
-    examples_section = format_stage2_examples_section(category_examples, category.name)
-
-    # Build the static parts of the prompt (everything except the comment)
-    # We use a placeholder that won't conflict with JSON braces
-    static_parts = {
-        "category_name": category.name,
-        "elements_section": elements_section,
-        "rules_section": rules_section,
-        "examples_section": examples_section,
-    }
-
-    def prompt_function(comment: str) -> str:
-        """Generate Stage 2 element extraction prompt for a comment."""
-        return f"""You are an expert conference feedback analyzer. Extract specific feedback related to {static_parts["category_name"]} from this comment.
-
-COMMENT TO ANALYZE:
-{comment}
-
----
-
-ELEMENTS TO IDENTIFY:
-
-{static_parts["elements_section"]}
-
----
-
-CLASSIFICATION RULES:
-
-{static_parts["rules_section"]}
-
----
-
-EXAMPLES:
-
-{static_parts["examples_section"]}
-
----
-
-Extract all relevant excerpts and return ONLY valid JSON. If no content relates to {static_parts["category_name"]}, return {{"classifications": []}}."""
-
-    return prompt_function
+    return template.format(comment=comment)
 
 
 def build_stage2_prompt_functions(
     condensed: CondensedTaxonomy,
-    examples: ExampleSet | List[ClassificationExample],
-    rules: Optional[List[str]] = None,
+    examples: Optional[ExampleSet | List[ClassificationExample]] = None,
+    rules: Optional[any] = None,  # For compatibility with existing code
+    use_handcrafted: bool = True,
+    max_examples_per_category: int = 6,
 ) -> Dict[str, Callable[[str], str]]:
     """
-    Build Stage 2 prompt functions for ALL categories.
+    Build reusable Stage 2 prompt functions for all categories.
 
-    This is the main entry point for Stage 2 prompt generation.
+    This creates a dict of functions that take a comment and return a prompt.
 
     Args:
-        condensed: CondensedTaxonomy with all categories
-        examples: ExampleSet or list of ClassificationExample
-        rules: Optional custom base rules
+        condensed: CondensedTaxonomy
+        examples: Optional ExampleSet or list (needed if use_handcrafted=False)
+        rules: Optional rules (for compatibility, not used with handcrafted)
+        use_handcrafted: If True, use handcrafted sections (default: True)
+        max_examples_per_category: Max examples per category if using generated
 
     Returns:
         Dict mapping category name to prompt function
 
     Example:
-        >>> stage2_prompts = build_stage2_prompt_functions(condensed, examples)
-        >>> people_prompt = stage2_prompts["People"]
-        >>> prompt = people_prompt("The speaker was brilliant!")
+        >>> # Use handcrafted (recommended)
+        >>> stage2_prompts = build_stage2_prompt_functions(condensed, use_handcrafted=True)
+        >>>
+        >>> # Or use generated (auto-curated)
+        >>> stage2_prompts = build_stage2_prompt_functions(
+        ...     condensed, examples, use_handcrafted=False, max_examples_per_category=6
+        ... )
+        >>>
+        >>> prompt = stage2_prompts["People"]("The staff was helpful!")
     """
     prompt_functions = {}
 
     for category in condensed.categories:
-        prompt_functions[category.name] = build_stage2_prompt_function(
-            category, examples, rules
+        cat_name = category.name
+
+        if use_handcrafted:
+            # Pre-build static sections
+            if cat_name not in HANDCRAFTED_STAGE2_SECTIONS:
+                print(f"⚠️  No handcrafted content for '{cat_name}', skipping")
+                continue
+
+            sections = HANDCRAFTED_STAGE2_SECTIONS[cat_name]
+            elements_text = sections["elements"]
+            rules_text = _format_rules(sections["rules"])
+            examples_text = _format_stage2_examples_handcrafted(cat_name)
+        else:
+            # Use generated content
+            if not examples:
+                raise ValueError("Must provide examples when use_handcrafted=False")
+
+            # Get and curate examples
+            relevant_examples = _get_stage2_examples_for_category(examples, cat_name)
+            curated_examples = _curate_stage2_examples(
+                relevant_examples, cat_name, max_examples_per_category
+            )
+
+            # Format elements
+            elements_text = "\n".join(
+                f"**{elem.name}**: {elem.short_description}" for elem in category.elements
+            )
+
+            # Default rules
+            default_rules = [
+                "Extract the EXACT excerpt from the comment that relates to each element.",
+                "Each excerpt should be classified to ONE element only.",
+                "Sentiment: positive (praise), negative (criticism), neutral (observation), mixed (both positive and negative).",
+            ]
+            rules_text = _format_rules(default_rules)
+
+            # Format examples
+            examples_text = _format_stage2_examples_generated(curated_examples, cat_name)
+
+        # Build static template
+        static_template = STAGE2_TEMPLATE.format(
+            category=cat_name,
+            elements=elements_text,
+            rules=rules_text,
+            examples=examples_text,
         )
+
+        # Create closure
+        def make_prompt_fn(template):
+            def prompt_fn(comment: str) -> str:
+                return template.format(comment=comment)
+
+            return prompt_fn
+
+        prompt_functions[cat_name] = make_prompt_fn(static_template)
 
     return prompt_functions
 
 
 # =============================================================================
-# Export as Python Module
+# Export Functions
 # =============================================================================
 
 
 def export_stage2_prompt_module(
-    condensed: CondensedTaxonomy,
-    examples: ExampleSet | List[ClassificationExample],
+    category: str,
     filepath: str | Path,
+    condensed: CondensedTaxonomy,
+    examples: Optional[ExampleSet | List[ClassificationExample]] = None,
     rules: Optional[List[str]] = None,
+    use_handcrafted: bool = True,
+    max_examples: int = 6,
 ) -> Path:
     """
-    Export Stage 2 prompts as a standalone Python module.
-
-    Creates a .py file with one prompt function per category, plus a
-    STAGE2_PROMPTS dict mapping category names to functions.
+    Export a Stage 2 prompt as a standalone Python module.
 
     Args:
-        condensed: CondensedTaxonomy
-        examples: ExampleSet or list of ClassificationExample
+        category: Category name
         filepath: Output path for the .py file
-        rules: Optional custom base rules
+        condensed: CondensedTaxonomy
+        examples: Optional examples (needed if use_handcrafted=False)
+        rules: Optional rules
+        use_handcrafted: If True, use handcrafted sections (default: True)
+        max_examples: Max examples if using generated
 
     Returns:
         Path to the generated module
-
-    Example:
-        >>> export_stage2_prompt_module(condensed, examples, "prompts/stage2.py")
-        >>> # Later, in production:
-        >>> from prompts.stage2 import STAGE2_PROMPTS, stage2_people_prompt
-        >>> prompt = stage2_people_prompt("Great speaker!")
-        >>> # Or use the dict:
-        >>> prompt = STAGE2_PROMPTS["People"]("Great speaker!")
     """
-    from ..taxonomy.utils import sanitize_model_name
+    # Build prompt components
+    if use_handcrafted:
+        if category not in HANDCRAFTED_STAGE2_SECTIONS:
+            raise ValueError(f"No handcrafted content for category: {category}")
 
-    filepath = Path(filepath)
-    filepath.parent.mkdir(parents=True, exist_ok=True)
+        sections = HANDCRAFTED_STAGE2_SECTIONS[category]
+        elements_text = sections["elements"]
+        rules_text = _format_rules(sections["rules"])
+        examples_text = _format_stage2_examples_handcrafted(category)
+    else:
+        if not examples:
+            raise ValueError("Must provide examples when use_handcrafted=False")
 
-    # Build all the prompt function code
-    function_codes = []
-    function_names = []
+        # Get category object
+        cat_obj = condensed.get_category(category)
+        if not cat_obj:
+            raise ValueError(f"Category not found: {category}")
 
-    for category in condensed.categories:
-        # Get examples for this category
-        category_examples = get_stage2_examples_for_category(examples, category.name)
+        # Get and curate examples
+        relevant_examples = _get_stage2_examples_for_category(examples, category)
+        curated_examples = _curate_stage2_examples(relevant_examples, category, max_examples)
 
-        # Pre-compute sections
-        elements_section = format_elements_section(category)
-        rules_section = format_stage2_rules(category.name, rules)
-        examples_section = format_stage2_examples_section(category_examples, category.name)
+        # Format elements
+        elements_text = "\n".join(
+            f"**{elem.name}**: {elem.short_description}" for elem in cat_obj.elements
+        )
 
-        # Create function name
-        sanitized_name = sanitize_model_name(category.name).lower()
-        func_name = f"stage2_{sanitized_name}_prompt"
-        function_names.append((category.name, func_name))
+        # Rules
+        default_rules = rules or [
+            "Extract the EXACT excerpt from the comment that relates to each element.",
+            "Each excerpt should be classified to ONE element only.",
+            "Sentiment: positive (praise), negative (criticism), neutral (observation), mixed (both positive and negative).",
+        ]
+        rules_text = _format_rules(default_rules)
 
-        # Build the function code
-        func_code = f'''
+        # Examples
+        examples_text = _format_stage2_examples_generated(curated_examples, category)
+
+    # Sanitize function name
+    import re
+
+    func_name_base = re.sub(r"[^a-zA-Z0-9_]", "_", category.lower()).strip("_")
+    func_name = f"stage2_{func_name_base}_prompt"
+
+    # Get element names
+    cat_obj = condensed.get_category(category)
+    element_names = [e.name for e in cat_obj.elements] if cat_obj else []
+
+    # Build module content
+    source_desc = (
+        "handcrafted examples"
+        if use_handcrafted
+        else f"curated generated examples (max {max_examples})"
+    )
+
+    module_content = f'''# =============================================================================
+# Stage 2: {category}
+# =============================================================================
+#
+# Extracts feedback elements related to {category}.
+#
+# AUTO-GENERATED from {source_desc}
+#
+# Generated: {__import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+#
+# ⚠️  WARNING: Direct edits to this file will be LOST if regenerated!
+#     To make permanent changes, edit the source and rebuild.
+#
+#     If you intentionally edited this file, change the flag below to True
+#     to protect it from being overwritten during regeneration.
+#
+# MANUALLY_EDITED: False
+# =============================================================================
+
+CATEGORY_NAME = "{category}"
+
+ELEMENTS = [
+    {", ".join(f'"{name}"' for name in element_names)}
+]
+
+
 def {func_name}(comment: str) -> str:
     """
-    Generate Stage 2 prompt for {category.name}.
-
+    Generate Stage 2 element extraction prompt for {category}.
+    
     Args:
         comment: The conference feedback comment to analyze
-
+        
     Returns:
         Formatted prompt string ready for LLM processing
     """
-    return f"""You are an expert conference feedback analyzer. Extract specific feedback related to {category.name} from this comment.
+    return f"""You are an expert conference feedback analyzer. Extract specific feedback related to {category} from this comment.
 
 COMMENT TO ANALYZE:
 {{comment}}
@@ -488,81 +685,32 @@ COMMENT TO ANALYZE:
 
 ELEMENTS TO IDENTIFY:
 
-{elements_section}
+{elements_text}
 
 ---
 
 CLASSIFICATION RULES:
 
-{rules_section}
+{rules_text}
 
 ---
 
 EXAMPLES:
 
-{examples_section}
+{examples_text}
 
 ---
 
-Extract all relevant excerpts and return ONLY valid JSON. If no content relates to {category.name}, return {{{{"classifications": []}}}}."""
+Extract all relevant excerpts and return ONLY valid JSON. If no content relates to {category}, return {{"classifications": []}}."""
+
+
+# Convenience alias
+PROMPT = {func_name}
 '''
-        function_codes.append(func_code)
 
-    # Build the STAGE2_PROMPTS dict
-    dict_entries = ",\n    ".join(
-        f'"{cat_name}": {func_name}' for cat_name, func_name in function_names
-    )
-
-    # Assemble the module
-    module_content = f'''"""
-Stage 2: Element Extraction Prompts
-
-Auto-generated from condensed taxonomy and curated examples.
-
-Usage:
-    from {Path(filepath).stem} import STAGE2_PROMPTS, stage2_people_prompt
-
-    # Use specific function
-    prompt = stage2_people_prompt("The speaker was great!")
-
-    # Or use the dict
-    prompt = STAGE2_PROMPTS["People"]("The speaker was great!")
-
-Available functions:
-{chr(10).join(f"    - {func_name}" for _, func_name in function_names)}
-"""
-
-from typing import Callable, Dict
-
-{"".join(function_codes)}
-
-# =============================================================================
-# Category to Prompt Function Mapping
-# =============================================================================
-
-STAGE2_PROMPTS: Dict[str, Callable[[str], str]] = {{
-    {dict_entries}
-}}
-
-
-def get_stage2_prompt(category: str) -> Callable[[str], str]:
-    """
-    Get the Stage 2 prompt function for a category.
-
-    Args:
-        category: Category name
-
-    Returns:
-        Prompt function for that category
-
-    Raises:
-        KeyError: If category not found
-    """
-    if category not in STAGE2_PROMPTS:
-        available = ", ".join(STAGE2_PROMPTS.keys())
-        raise KeyError(f"Unknown category '{{category}}'. Available: {{available}}")
-    return STAGE2_PROMPTS[category]
-'''
+    # Write to file
+    filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(module_content)
@@ -570,244 +718,27 @@ def get_stage2_prompt(category: str) -> Callable[[str], str]:
     return filepath
 
 
-def export_stage2_prompt_modules(
-    condensed: CondensedTaxonomy,
-    examples: ExampleSet | List[ClassificationExample],
-    directory: str | Path,
-    rules: Optional[List[str]] = None,
-) -> List[Path]:
-    """
-    Export Stage 2 prompts as separate modules (one per category).
-
-    Creates a directory with one .py file per category plus an __init__.py.
-
-    Args:
-        condensed: CondensedTaxonomy
-        examples: ExampleSet or list of ClassificationExample
-        directory: Output directory
-        rules: Optional custom base rules
-
-    Returns:
-        List of paths to generated modules
-
-    Example:
-        >>> export_stage2_prompt_modules(condensed, examples, "prompts/stage2/")
-        >>> # Creates:
-        >>> #   prompts/stage2/__init__.py
-        >>> #   prompts/stage2/people.py
-        >>> #   prompts/stage2/learning_content_delivery.py
-        >>> #   ...
-    """
-    from ..taxonomy.utils import sanitize_model_name
-
-    directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
-
-    created_paths = []
-    module_imports = []
-
-    for category in condensed.categories:
-        # Get examples for this category
-        category_examples = get_stage2_examples_for_category(examples, category.name)
-
-        # Pre-compute sections
-        elements_section = format_elements_section(category)
-        rules_section = format_stage2_rules(category.name, rules)
-        examples_section = format_stage2_examples_section(category_examples, category.name)
-
-        # Create filename
-        sanitized_name = sanitize_model_name(category.name).lower()
-        filename = f"{sanitized_name}.py"
-        func_name = f"stage2_{sanitized_name}_prompt"
-
-        module_content = f'''"""
-Stage 2 Prompt: {category.name}
-
-Auto-generated element extraction prompt.
-
-Usage:
-    from {sanitized_name} import {func_name}
-
-    prompt = {func_name}("Your comment here")
-"""
-
-
-def {func_name}(comment: str) -> str:
-    """
-    Generate Stage 2 prompt for {category.name}.
-
-    Args:
-        comment: The conference feedback comment to analyze
-
-    Returns:
-        Formatted prompt string ready for LLM processing
-    """
-    return f"""You are an expert conference feedback analyzer. Extract specific feedback related to {category.name} from this comment.
-
-COMMENT TO ANALYZE:
-{{comment}}
-
----
-
-ELEMENTS TO IDENTIFY:
-
-{elements_section}
-
----
-
-CLASSIFICATION RULES:
-
-{rules_section}
-
----
-
-EXAMPLES:
-
-{examples_section}
-
----
-
-Extract all relevant excerpts and return ONLY valid JSON. If no content relates to {category.name}, return {{{{"classifications": []}}}}."""
-
-
-# Convenience alias
-CATEGORY_NAME = "{category.name}"
-'''
-
-        filepath = directory / filename
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(module_content)
-
-        created_paths.append(filepath)
-        module_imports.append((sanitized_name, func_name, category.name))
-
-    # Create __init__.py
-    init_imports = "\n".join(f"from .{mod} import {func}" for mod, func, _ in module_imports)
-    dict_entries = ",\n    ".join(f'"{cat}": {func}' for mod, func, cat in module_imports)
-
-    init_content = f'''"""
-Stage 2 Element Extraction Prompts
-
-Auto-generated prompt modules for each category.
-
-Usage:
-    from stage2 import STAGE2_PROMPTS
-    from stage2 import stage2_people_prompt
-
-    # Use the dict
-    prompt = STAGE2_PROMPTS["People"]("Great speaker!")
-
-    # Or use directly
-    prompt = stage2_people_prompt("Great speaker!")
-"""
-
-from typing import Callable, Dict
-
-{init_imports}
-
-STAGE2_PROMPTS: Dict[str, Callable[[str], str]] = {{
-    {dict_entries}
-}}
-
-__all__ = [
-    "STAGE2_PROMPTS",
-{chr(10).join(f'    "{func}",' for _, func, _ in module_imports)}
-]
-'''
-
-    init_path = directory / "__init__.py"
-    with open(init_path, "w", encoding="utf-8") as f:
-        f.write(init_content)
-
-    created_paths.append(init_path)
-
-    return created_paths
-
-
 # =============================================================================
-# Prompt Statistics
+# Utility Functions
 # =============================================================================
 
 
-def get_stage2_prompt_stats(
-    condensed: CondensedTaxonomy,
+def format_elements_section(category: CondensedCategory) -> str:
+    """Format elements section for a category (for generated content)."""
+    return "\n".join(f"**{elem.name}**: {elem.short_description}" for elem in category.elements)
+
+
+def format_stage2_examples_section(
+    examples: List[ClassificationExample],
+    category: str,
+) -> str:
+    """Format examples section for Stage 2 (wrapper for compatibility)."""
+    return _format_stage2_examples_generated(examples, category)
+
+
+def get_stage2_examples_for_category(
     examples: ExampleSet | List[ClassificationExample],
-    rules: Optional[List[str]] = None,
-) -> Dict[str, dict]:
-    """
-    Get statistics about Stage 2 prompts for each category.
-
-    Args:
-        condensed: CondensedTaxonomy
-        examples: ExampleSet or list
-        rules: Optional custom rules
-
-    Returns:
-        Dict mapping category name to stats dict
-    """
-    stats = {}
-
-    for category in condensed.categories:
-        category_examples = get_stage2_examples_for_category(examples, category.name)
-
-        # Build a sample prompt
-        sample_prompt = build_stage2_prompt_string(
-            "Sample comment for length estimation.",
-            category,
-            category_examples,
-            rules,
-        )
-
-        stats[category.name] = {
-            "total_chars": len(sample_prompt),
-            "estimated_tokens": len(sample_prompt) // 4,
-            "num_elements": len(category.elements),
-            "num_examples": len(category_examples),
-            "num_rules": len(rules or DEFAULT_STAGE2_RULES)
-            + len(CATEGORY_SPECIFIC_RULES.get(category.name, [])),
-        }
-
-    return stats
-
-
-def print_stage2_prompts_preview(
-    condensed: CondensedTaxonomy,
-    examples: ExampleSet | List[ClassificationExample],
-    sample_comment: str = "The speaker was great and very knowledgeable.",
-    show_full_prompt: Optional[str] = None,
-) -> None:
-    """
-    Print a preview of Stage 2 prompts.
-
-    Args:
-        condensed: CondensedTaxonomy
-        examples: ExampleSet or list
-        sample_comment: Comment to use in preview
-        show_full_prompt: If provided, show full prompt for this category
-    """
-    stats = get_stage2_prompt_stats(condensed, examples)
-
-    print("\n" + "=" * 70)
-    print("STAGE 2 PROMPTS PREVIEW")
-    print("=" * 70)
-
-    for category in condensed.categories:
-        cat_stats = stats[category.name]
-        print(f"\n**{category.name}**")
-        print(f"  Elements: {cat_stats['num_elements']}")
-        print(f"  Examples: {cat_stats['num_examples']}")
-        print(f"  Rules: {cat_stats['num_rules']}")
-        print(
-            f"  Prompt size: {cat_stats['total_chars']:,} chars (~{cat_stats['estimated_tokens']:,} tokens)"
-        )
-
-    if show_full_prompt:
-        category = condensed.get_category(show_full_prompt)
-        if category:
-            category_examples = get_stage2_examples_for_category(examples, show_full_prompt)
-            prompt = build_stage2_prompt_string(sample_comment, category, category_examples)
-
-            print("\n" + "-" * 70)
-            print(f"FULL PROMPT FOR: {show_full_prompt}")
-            print("-" * 70)
-            print(prompt)
+    category: str,
+) -> List[ClassificationExample]:
+    """Get examples for a category (wrapper for compatibility)."""
+    return _get_stage2_examples_for_category(examples, category)
